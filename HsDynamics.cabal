@@ -1,0 +1,72 @@
+name:                HsDynamics
+
+-- The package version.  See the Haskell package versioning policy (PVP) 
+-- for standards guiding when and how versions should be incremented.
+-- http://www.haskell.org/haskellwiki/Package_versioning_policy
+-- PVP summary:      +-+------- breaking API changes
+--                   | | +----- non-breaking API additions
+--                   | | | +--- code changes with no API change
+version:             0.1.0.0
+
+-- A short (one-line) description of the package.
+synopsis:          Molecular Dynamics
+
+-- A longer description of the package.
+-- description:         
+
+-- URL for the project homepage or repository.
+homepage:            http://www2.uah.es/resmol/
+license:             BSD3
+license-file:        LICENSE
+author:              Felipe Zapata, Angel Alvarez 
+
+-- An email address to which users can send suggestions, bug reports, and 
+-- patches.
+maintainer:          felipe.zapata@uah.es
+category:            computational chemistry
+
+build-type:          Simple
+
+-- Constraint on the version of Cabal needed to build this package.
+cabal-version:       >=1.8
+
+Flag debug
+    Description: Enable debug features
+    Default:False
+
+
+executable HsDynamics
+  ghc == 7.*
+  ghc-options:
+    -rtsopts
+    -threaded
+  build-depends:
+      async     == 2.0.*
+    , base >= 4.5 && < 4.6
+    , Cabal
+    , containers
+    , directory
+    , EitherT      == 0.2.*
+    , filepath
+    , hmatrix   
+    , mtl
+    , normaldistribution == 1.1.*
+    , parsec == 3.1.*
+    , ParsecTools
+    , process   == 1.1.*
+    , random == 1.0.*
+    , repa
+    , split
+    , strict
+    , transformers == 0.3.*
+    , unix
+    ,vector == 0.10.*
+
+    
+    
+
+  hs-source-dirs:      src
+  main-is: Main.hs
+  other-modules: BasisParser CommonTypes Constants Dynamics GenericParser InitialConditions Molcas MolcasShow OptsCheck Paths_HsDynamics  ParsecNumbers ParsecText  Tasks Tully 
+
+ 
