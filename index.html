@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <title>Hsdynamics by AngelitoJ</title>
+
+    <link rel="stylesheet" href="stylesheets/styles.css">
+    <link rel="stylesheet" href="stylesheets/pygment_trac.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="wrapper">
+      <header>
+        <h1>Hsdynamics</h1>
+        <p>Haskell Molecular Dynamics</p>
+
+        <p class="view"><a href="https://github.com/AngelitoJ/HsDynamics">View the Project on GitHub <small>AngelitoJ/HsDynamics</small></a></p>
+
+
+        <ul>
+          <li><a href="https://github.com/AngelitoJ/HsDynamics/zipball/master">Download <strong>ZIP File</strong></a></li>
+          <li><a href="https://github.com/AngelitoJ/HsDynamics/tarball/master">Download <strong>TAR Ball</strong></a></li>
+          <li><a href="https://github.com/AngelitoJ/HsDynamics">View On <strong>GitHub</strong></a></li>
+        </ul>
+      </header>
+      <section>
+        <p>HsDynamics</p>
+
+<p>This package contains a tool to perform Semiclassical Molecular Dynamics (NVT)</p>
+
+<p>Given some initial conditions, the usual MD loop uses, some external programs (currently Molcas and Gaussian are supported) capable of calculating the energy gradient, parsings those tools output logs and perform the whole "Semi- Classical part" of the Molecular Dynamics.</p>
+
+<p>Current modules feature these MD components:</p>
+
+<pre><code>- Velocity Verlet algorithm to propagate the geometries.
+- Nosé Hoover thermostate chains for a constant temperature bath.
+- Tully-Hammes-Schiffer hopping algorithm (along with correction of Persico-Granucci).
+</code></pre>
+
+<p>It also features the possibility to add external forces to the molecule, to simulate constrained conditions that can be found, in example, in a protein binding pocket.</p>
+
+<p>The package exercise multiple haskell facilities, featuring several parsec submodules and making use of Async
+in order to manage external programs.</p>
+
+<p><a href="https://github.com/2013" class="user-mention">@2013</a> Felipe Zapata, Angel Alvarez, Alessio Valentini. The RESMOL group</p>
+      </section>
+      <footer>
+        <p>This project is maintained by <a href="https://github.com/AngelitoJ">AngelitoJ</a></p>
+        <p><small>Hosted on GitHub Pages &mdash; Theme by <a href="https://github.com/orderedlist">orderedlist</a></small></p>
+      </footer>
+    </div>
+    <script src="javascripts/scale.fix.js"></script>
+    
+  </body>
+</html>
