@@ -18,12 +18,12 @@ synopsis:          Molecular Dynamics
 homepage:            http://www2.uah.es/resmol/
 license:             BSD3
 license-file:        LICENSE
-author:              Felipe Zapata, Angel Alvarez 
+author:              Felipe Zapata, Angel Alvarez , Alessio Valentini
 
 -- An email address to which users can send suggestions, bug reports, and 
 -- patches.
-maintainer:          felipe.zapata@uah.es
-category:            computational chemistry
+maintainer:          angel@uah.es, felipe.zapata@uah.es, Alessio.valentini@uah.es
+category:            Computational Chemistry
 
 build-type:          Simple
 
