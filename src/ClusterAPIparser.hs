@@ -9,21 +9,16 @@ import Control.Concurrent.Async
 import Control.Lens
 import Control.Monad 
 import Data.Array.Repa as R hiding ((++))
-import qualified Data.ByteString.Char8 as C
-import qualified Data.ByteString.Lex.Double as L
 import Data.Complex
 import Data.Either (lefts)
 import Data.List as DL
-import Data.List.Split (chunksOf)
 import Data.Maybe (catMaybes,fromMaybe,isJust)
 import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed as VU
 import System.Directory 
 import System.Exit(ExitCode( ExitFailure,ExitSuccess))
 import System.Posix.User (getLoginName)
 import System.Process (system,readProcess)
 import Text.Parsec
-import Text.Parsec.ByteString (parseFromFile)
 import Text.Printf (printf)
 
 
@@ -31,10 +26,8 @@ import Text.Printf (printf)
 import CommonTypes
 import Constants
 import Gaussian 
-import InternalCoordinates
 import Molcas 
 import ParsecNumbers
-import ParsecText
 import QuadraticInterpolation
 import TinkerQMMM
 -- =======================> Data, Types and Instances <==========================
@@ -78,11 +71,9 @@ naturalTransf (ParseInfo xs) = catMaybes xs
 interactWith :: Job -> String -> Molecule -> IO Molecule
 interactWith job project mol = 
   case job of 
-     Molcas theory -> do
-                 let io1 = writeMolcasXYZ (project ++ ".xyz") mol
-                     io2 = writeFile (project ++ ".input") $ concatMap show theory
-                 concurrently io1 io2 
-                 launchMolcas project
+     Molcas -> do
+                 writeMolcasXYZ (project ++ ".xyz") mol
+                 launchJob project
                  parseMolcas project ["Grad","Roots"] mol
                  
      MolcasTinker atomsQM tinkerPath -> do 
@@ -93,15 +84,16 @@ interactWith job project mol =
                           parseMolcas project ["GradESPF"] mol
                                                                       
                  
-     Gaussian tupleTheory -> do 
+     Gaussian theoryLevel -> do 
                             let input  = project ++ ".com"
+                                format = "/apps/Chem/g09/formchk " ++ project ++ ".chk"
+                                fchk   = project ++ ".fchk"        
                                 out    = project ++ ".log"        
-                            writeGaussJob tupleTheory project mol 
+                            writeGaussJob theoryLevel project mol 
                             launchGaussian input
-                            launchJob $ "g09 " ++ input
                             updateMultiStates out mol
                             
-     Palmeiro conex dirs ->  launchPalmeiro conex dirs mol
+--      Palmeiro  -> do
        
                              
      Quadratic -> return $ calcgradQuadratic mol
@@ -112,12 +104,7 @@ launchCluster cmd name = do
   [pid] <- lines `fmap` readProcess cmd [name] ""
   simpleLoop pid 10 not    -- has the calculation started?
   simpleLoop pid 20 id -- has the calculation finished?
-  
-  
---Command to summit jobs in the nodes of a cluster 
--- launchNode :: Command -> Args -> IO ()
--- launchNode cmd name = do
---  
+
 -- | check the cluster queue each t seconds
 simpleLoop :: String  -> Int -> (Bool -> Bool) -> IO ()
 simpleLoop pid t fun = do
@@ -135,18 +122,11 @@ launchJob script = do
 -- | Job Status 
 checkStatus :: ExitCode -> IO ()
 checkStatus r =  case r of
-       ExitSuccess   -> return ()
+       ExitSuccess ->  return ()
        ExitFailure _ -> putStrLn "Lord give us patience and resistence in the ass!!\n" >>
                         fail "Job Launch Failed (Bastard Fortranians!!)"
                         
-parallelLaunch :: [IO a] -> IO [a]
-parallelLaunch actions = foldr conc (return []) actions
-  where conc io ios = do
-             (x,xs) <- concurrently io ios
-             return (x:xs)
-
-                        
--- ============> Tully Updates <=========
+-- ============> Shared Functions <=========
 updateCoeffEnergies :: [Energy] -> [[Double]] -> Molecule -> Molecule
 updateCoeffEnergies energies coeff mol = 
   let currentCoeff =  mol^.getCoeffCI
@@ -156,27 +136,7 @@ updateCoeffEnergies energies coeff mol =
          else (coeff : init currentCoeff ,energies : init currentEner)
   in mol & getCoeffCI .~ newCoeffs 
          & getEnergy  .~ newEnergy
-                              
-updateNewJobInput :: Job -> Molecule -> Job
-updateNewJobInput job mol = case job of
-                                 Molcas   theory          -> updateMolcasInput theory rlxroot
-                                 Gaussian (theory,basis)  -> Gaussian (updateGaussianInput theory rlxroot, basis) 
-                                 otherwise                -> job               
-                                                              
-  where rlxroot = succ $ calcElectSt mol                                                              
-
-updateMolcasInput ::  [MolcasInput String] -> Int -> Job
-updateMolcasInput xs rlxroot = Molcas $ fmap modifyInputRas xs
- where modifyInputRas x = case x of
-                               (RasSCF _ h t) -> RasSCF rlxroot h t
-                               otherwise      -> x
-
-updateGaussianInput :: TheoryLevel -> Int -> TheoryLevel
-updateGaussianInput theory rlxroot =
-       case theory of
-            CASSCF t _old s -> CASSCF t rlxroot s
-            otherwise       -> theory
-                
+                                                
 -- =======================> Tinker <===========                                                
 launchTinker :: Command -> IO ()
 launchTinker = undefined
@@ -186,64 +146,6 @@ launchTinker = undefined
 modifyTinkerNames :: Project -> IO ()
 modifyTinkerNames project = renameFile (root ++ "_2") root
   where root = project ++ ".xyz"
-        
-        
--- ======================> Palmeiro <==============
-launchPalmeiro :: Connections -> [FilePath] -> Molecule -> IO Molecule
-launchPalmeiro conex dirs mol =  do
-   let internals = calcInternals conex mol
-       carts     =  mol ^. getCoord
-   (e1,f1) <- interpolation conex internals carts (dirs !! 0)
-   (e2,f2) <- interpolation conex internals carts (dirs !! 1)
-   return $ mol & getForce  .~ f1 
-                & getEnergy .~ [[e1,e2]]
-  
--- Because Palmeiro set of Utilities required a Directory for each electronic state then
--- there are created as many directories as electronic states involved 
-interpolation :: Connections -> Internals -> Coordinates -> FilePath -> IO (Energy,Force)  
-interpolation conex qs carts dir = do
-  pwd <- getCurrentDirectory
-  setCurrentDirectory $ pwd ++ dir
-  print $ "Current Directory" ++ pwd ++ dir
-  writePalmeiroScript qs
-  launchJob "gfortran  Tools.f90 Diag.f90 CartToInt2.f90 FitSurfMN_linux3.f90 PalmeiroScript.f90 -o PalmeiroScript.o -L/usr/lib64/ -llapack -lblas"
-  launchJob "chmod u+x PalmeiroScript.o"
-  launchJob "./PalmeiroScript.o > /dev/null 2>&1 "
-  gradInter <- readVectorUnboxed "Gradient.out"
-  energy    <- (head . VU.toList) `fmap` readVectorUnboxed "Energy.out"
-  grad      <- transform2Cart conex gradInter carts 
-  let force = R.computeUnboxedS $  R.map negate grad
-  setCurrentDirectory pwd
-  print gradInter
-  return (energy,force)
-
-parserFileInternasCtl :: FilePath -> IO Connections
-parserFileInternasCtl name = do
-  r <- parseFromFile parserCtl name
-  case r of
-       Left err  -> error $ show err
-       Right xs  -> return xs
-  
-parserCtl ::  MyParser st (Connections)
-parserCtl = do 
-  manyTill anyChar $ try $ string "[InternalCoord]"
-  anyLine
-  parseInternals
-   
-processMolcasOutputFile fname = do
-        putStrLn $ "Processing file:" ++ (show fname) ++ "\n"
-        input  <- C.readFile fname
-        case (runParser molcasOutParser defaultParserState fname input) of
-             Left err  -> print err
-             Right xs  -> mapM_ print xs   
-   
-getSuffixFile ::  FilePath -> String -> IO FilePath
-getSuffixFile path suff = do
-  xs <- (filter (`notElem` [".",".."])) <$> (getDirectoryContents path)
-  let ctl = head $ filter (isSuffixOf suff) xs
-  return $ if null ctl then error "no .ctl file found" 
-		       else ctl
-  
 -- =======================> Molcas <============
 
 launchMolcas :: Project ->  IO ()
@@ -255,15 +157,7 @@ parseMolcas project labels mol = do
   let fun = lookupLabel pairs
       newMol = updateMolecule fun labels mol
   return newMol
-
-parseMolcasInput :: FilePath -> IO [MolcasInput String]
-parseMolcasInput fname = do
-  input  <- C.readFile fname
-  case runParser parserMolcasInput defaultParserState fname input of
-       Left msg -> error $ show msg
-       Right xs -> return xs
-
-  
+                  
 updateMolecule :: (Label ->[Double]) -> [Label] -> Molecule -> Molecule
 updateMolecule fun labels mol = foldl' step mol labels
   where step acc l = case l of
@@ -305,10 +199,8 @@ molcasParsers key (ModuleData _name _string xs)  =
                                          
 getModuleAuto :: [MolBlock] ->  Maybe [ModuleData]
 getModuleAuto xs  =  if null xs then Nothing
-                                else  let x  = filter Molcas.isAuto xs
-                                      in case x of 
-                                              [ModuleAuto _n _s modules] -> Just modules
-                                              otherwise -> Nothing
+                                else  let [ModuleAuto _n _s modules] = filter Molcas.isAuto xs
+                                      in Just modules     
                                            
 getAlaskaGrad :: [SectionData] -> ParseInfo (Label,[Double]) 
 getAlaskaGrad xs = if null xs then ParseInfo [Nothing]
@@ -436,18 +328,18 @@ gaussCoeff = undefined
                              
 -- ================> Parser Internal Coordinates <===============
 
-parseInternals :: MyParser st (Connections)
+parseInternals :: MyParser st (V.Vector InternalCoord)
 parseInternals = do
   bonds     <- parseSection 2
   angles    <- parseSection 3
   dihedrals <- parseSection 4
-  return $ V.concat [bonds, angles, dihedrals]
+  return $  bonds V.++ angles V.++ dihedrals
   
-parseSection :: Int ->  MyParser st Connections 
+parseSection :: Int ->  MyParser st (V.Vector InternalCoord)
 parseSection !n = do
   spaces
   nInternals <- intNumber
-  anyLine
+  skipLine
   conex <- count nInternals $ parseQ n
   return $ V.fromList conex
   
@@ -457,8 +349,8 @@ parseSection !n = do
 parseQ :: Int ->  MyParser st InternalCoord 
 parseQ !n = do 
            xs <- count n (spaces >> intNumber)
-           anyLine
-           let getIndex x = pred (xs !! x)  -- atomic index begins at 1  
+           skipLine
+           let getIndex x = pred (xs !! x)
            case n of 
                 2 -> return $ Bond     (getIndex 0) (getIndex 1)
                 3 -> return $ Angle    (getIndex 0) (getIndex 1) (getIndex 2)
@@ -470,7 +362,7 @@ parseQ !n = do
 parseMoleculeXYZ :: MyParser st [(Label,[Double])]  
 parseMoleculeXYZ = do
     numat <- intNumber 
-    count 2 anyLine
+    count 2 skipLine
     geometry <- count numat parseAtoms
     return $ geometry 
     
@@ -480,9 +372,12 @@ parseAtoms = do
             spaces 
             label <- many1 alphaNum
             xs <- count 3 (spaces >> realNumber)
-            anyLine
+            skipLine
             return $ (label,xs) 
            
+
+skipLine :: MyParser st ()
+skipLine = manyTill anyChar newline >> return ()
      
             
 -- =========> Utilities <=================
@@ -492,18 +387,6 @@ calcElectSt mol =
         Left s  -> fromEnum s
         Right s -> fromEnum s
 
-
-readVectorUnboxed :: FilePath -> IO (VU.Vector Double)
-readVectorUnboxed file = C.readFile file >>= \s -> return $ parseUnboxed s
-
-parseUnboxed ::C.ByteString -> VU.Vector Double
-parseUnboxed = VU.unfoldr step
-  where
-    isspace x = if x == ' ' then True else False     
-    step !s = let b = C.dropWhile isspace s
-              in case L.readDouble b of
-                 Nothing       -> Nothing
-                 Just (!k, !t) -> Just (k, C.tail t)         
         
 -- =============================> <===============================
 printGnuplot :: MatrixCmplx -> Molecule -> IO ()
@@ -519,33 +402,6 @@ printGnuplot matrix mol = do
         
 -- ==============================> Printing Molecule and scripts <==============
 
-writePalmeiroScript :: Internals -> IO ()
-writePalmeiroScript qs = do
-  let spaces = concat $ replicate 5 " "
-      inpQ = spaces ++ (writeInternasFortran qs)
-      l1 = concatMap (spaces++) ["Program FittingToSurface\n","Use MultiNodalFitSurf\n","Implicit None\n","Real(kind=8),allocatable :: Inpq(:),g(:),H(:)\n","Real(kind=8) :: E\n","Integer i,IErr,NumberCoord\n","Logical :: NewSimplex\n\n"]
-      dim = (show $ VU.length qs)
-      l2 = spaces ++ "NumberCoord="++ dim ++ "\n\n"
-      l3 = concatMap (spaces++) ["Call ReadDataFiles('./',.True.,IErr)\n\n","Allocate(Inpq(1:NumberCoord),g(1:NumberCoord),H(1:NumberCoord*(NumberCoord+1)/2))\n"]      
-      l4 = concatMap (spaces++) ["Call InterpolatePES(Inpq,IErr,NewSimplex,E,g,H)\n", "If (IErr>0) Print *,'InterpolatePES Has FAILED!.'\n", "Print *, 'Gradient'\n",
-                                 "open (unit=112, file='Gradient.out',status='replace',action='write')\n",
-                                 "open (unit=113, file='Energy.out',status='replace',action='write')\n",
-                                 "write(unit=112,fmt=*)  (real(g(i)) ,i=1," ++ dim ++ ")\n",                                 
-                                 "write(unit=113,fmt=*) (real(E))\n",
-                                 "close(unit=112)\n",
-                                 "close(unit=113)\n\n","End Program\n"]
-  writeFile "PalmeiroScript.f90" $  l1 ++ l2 ++ l3 ++ inpQ ++ l4
-      
-writeInternasFortran :: Internals -> String
-writeInternasFortran qs = 
-  let {-xss = chunksOf 8 . init . concatMap (printf "%2.6f,") $ VU.toList qs-}
-      spaces    = concat $ replicate 5 " "
-      (hs:tss)  = chunksOf 8 . fmap (printf "%2.6f,") $ VU.toList qs
-      blocks    = foldl' fun (DL.concat hs) tss
-      fun acc v = acc ++ "&\n" ++ spaces ++ "&" ++ DL.concat v
-  in "Inpq=(/" ++ (init blocks) ++ "/)\n\n"  -- init remove the last ","
-  
-  
 writeMolcasXYZ :: FilePath -> Molecule -> IO ()
 writeMolcasXYZ name mol = do
   let s = showAtoms mol
@@ -556,17 +412,15 @@ writeMolcasXYZ name mol = do
   writeFile name str
 
 
-writeGaussJob :: (TheoryLevel,Basis)  -> String -> Molecule -> IO ()
-writeGaussJob (theory,basis) project mol =  do
+writeGaussJob :: TheoryLevel -> String -> Molecule -> IO ()
+writeGaussJob theoryLevel project mol =  do
   name <- getLoginName   
-  let Left elecSt = mol^.getElecSt
-      gaussTheoryLevel = show $ writeCurrentRoot mol theory
-      l1 = addNewLines 1 $ "%chk=" ++ project ++ ".chk"
+  let l1 = addNewLines 1 $ "%chk=" ++ project ++ ".chk"
       l2 = addNewLines 1 "%mem=4000Mb"
       l3 = addNewLines 1 "%nproc=2"
       l4 = addNewLines 1 $ "%scr=/scratch/" ++ name ++ "/"
       l5 = addNewLines 1 $ "%rwf=/scratch/" ++ name ++ "/"
-      l6 = addNewLines 1 $ "#p " ++ gaussTheoryLevel ++ basis ++ "  force  iop(1/33=1) nosymm"
+      l6 = addNewLines 1 $ "#p " ++ theoryLevel ++ "  force  iop(1/33=1) nosymm"
       l7 = addNewLines 2 $ "# SCF=(MaxCycle=300,conver=7)"
       l8 = addNewLines 2 "save the old Farts, use Fortran."
       l9 = addNewLines 1 "0 1"
@@ -575,13 +429,6 @@ writeGaussJob (theory,basis) project mol =  do
       result = foldl1 (++) [l1,l2,l3,l4,l5,l6,l7,l8,l9,atoms,weights]
   writeFile (project ++ ".com") result 
        
-writeCurrentRoot :: Molecule -> TheoryLevel -> TheoryLevel
-writeCurrentRoot mol theory = 
-  let  new = succ $ calcElectSt mol
-  in case theory of
-          CASSCF t rlxroot s ->  if rlxroot == new then theory else CASSCF t new s
-          otherwise -> theory
-                   
          
 printMol :: Molecule -> String -> IO ()
 printMol mol msg = appendFile "geometry.out" $ numat ++ (showAtoms mol)
@@ -597,13 +444,12 @@ printData mol step = do
   appendFile "result.out" $ foldl1' (++) [l1,l2,l3]  
         
 showAtoms :: Molecule -> String
-showAtoms mol  = concat $ DL.zipWith3 fun labels xs vs
+showAtoms mol  = concatMap fun atoms
   where labels = mol^.getAtoms
-        qs = mol^.getCoord
-        xs = chunksOf 3 . R.toList . computeUnboxedS . R.map (*a0) $  qs
-        vs = mol^.getVel . to (chunksOf 3 . R.toList)
-        fun l x v = (printf "%s" l) ++ (printxyz x) ++ (printxyz v) ++ "\n"
-        printxyz [x,y,z] = printf "%12.5f  %.5f  %.5f" x y z
+        qs =  mol^.getCoord
+        xs =  R.toList . computeUnboxedS . R.map (*a0) $  qs         
+        atoms = zip labels [[xs !! (3*i), xs !! (3*i+1), xs !! (3*i+2)] | i <- [0..pred (length xs `div` 3)]]
+        fun = \(s,[x,y,z]) -> printf "%s  %.5f  %.5f  %.5f\n" s x y z
          
 addNewLines :: Int -> String -> String
 addNewLines n s = let f = (++"\n")

@@ -16,7 +16,7 @@
 -- Yet lot of people try to make a life upon this messy outputs so it deserve a good parser.
 -- 
 -- YMMV comes to be the norm when expecting where data will be and why, actually some info 
--- moves back and forth between runs even to unexpected places, upon many diferent facts
+-- moves back and forth between runs even to unexpected places, upon many different facts
 -- not always related to alternative code branchs. 
 
 -- Such a mess makes you feel shocked that this programming culture still achieves so many 
@@ -34,14 +34,18 @@
 
 module Molcas where
 
+import Control.Applicative ((<$>),(<*>),(*>),(<*))
+import Control.Exception (assert)
 import Data.Char
+import qualified Data.ByteString.Char8 as C
 import qualified Data.List.Split as DLS
 import Text.Parsec
-import ParsecNumbers
-import ParsecText
+import Text.Parsec.ByteString
 
 -- ======> Internal imports <=========
 import CommonTypes
+import ParsecNumbers
+import ParsecText
 
 -- ==========================================================
 
@@ -68,7 +72,7 @@ defaultParserState = MolState {
 processMolcasOutputFile :: FilePath -> IO ()
 processMolcasOutputFile fname = do
         putStrLn $ "Processing file:" ++ (show fname) ++ "\n"
-        input  <- readFile fname
+        input  <- C.readFile fname
         case (runParser molcasOutParser defaultParserState fname input) of
              Left err  -> print err
              Right xs  -> mapM_ print xs
@@ -76,8 +80,15 @@ processMolcasOutputFile fname = do
 -- Parse a given file path pointing to a Molcas output file 
 parseMolcasOutputFile :: FilePath -> IO (Either ParseError [MolBlock])
 parseMolcasOutputFile fname = do
-        input  <- readFile fname
+        input  <- C.readFile fname
         return $ runParser molcasOutParser defaultParserState fname input
+        
+pruebaParser :: Show a => FilePath -> MyParser MolState a -> IO ()
+pruebaParser  fileName parser = do
+  input <- C.readFile fileName
+  case runParser parser defaultParserState fileName input of
+       Left msg -> print msg
+       Right xs -> print xs
 
 -- ------------------------------------------------------------------------------------------------------------
 --  Top level parsers, one to input files (just a hack), one to Molcas output files 
@@ -102,7 +113,7 @@ molcasOutParser = do
     return $ elements
     where
         parsers = [ 
-                    molcasBlank                       -- Who needs blanks? we dont
+                    molcasBlank                       -- Who needs blanks? we don't
                     , molcasLicense                   -- Is this a Molcas license block?
                     , molcasLogo                      -- or the Molcas "Logo"?
                     , molcasCopyRight                 -- or who rules the world?
@@ -111,7 +122,128 @@ molcasOutParser = do
                     , molcasWhatever                  -- You guess what? Actually I just dont care
                     ]
 
--- ------------------------------------------------------------------------------------------------------------
+ -- ---------------------------------------------------------------
+ -- Molcas Input Parsers
+ -- 
+-- -----------------------------------------------------------------
+parserInputMolcasQM :: FilePath -> MyParser MolState [AtomQM] -> IO [AtomQM]
+parserInputMolcasQM  fileName parser = do
+  input <- C.readFile fileName
+  case runParser parser defaultParserState fileName input of
+       Left msg -> error $ show msg
+       Right xs -> return xs
+
+-- | Molcas .input File Parser       
+parseMolcasInputFile :: FilePath -> IO [MolcasInput String]
+parseMolcasInputFile fname = do
+  input  <- C.readFile fname
+  case runParser parserMolcasInput defaultParserState fname input of
+       Left msg -> error $ show msg
+       Right xs -> return xs       
+
+parserMolcasInput :: MyParser MolState [MolcasInput String]
+parserMolcasInput = many1 parseInputSection 
+  
+
+parseInputSection :: MyParser MolState (MolcasInput String)
+parseInputSection =    try parserInputCommand
+                   <|> try parserGateway
+                   <|> try parserSeward
+                   <|> try parserCasscf
+                   <|> try parserMclr
+                   <|> try parserAlaska
+                   <?> "I don't know which Molcas Module are you talking about, is it Swedish?"  
+
+parserInputCommand :: MyParser MolState (MolcasInput String )
+parserInputCommand = do
+                     string ">>"
+                     Command <$> anyLine
+
+parserGateway :: MyParser MolState (MolcasInput String )
+parserGateway = do
+                manyTill anyChar $ char '&'
+                oneOf ['G','g'] >> anyLine
+                Gateway <$> (takeUntilSymbols ['&'])
+
+parserSeward :: MyParser MolState (MolcasInput String )
+parserSeward = do
+               manyTill anyChar $ char '&'
+               oneOf ['S','s'] >> anyLine
+               Seward <$> (takeUntilSymbols ['&'])
+
+parserCasscf :: MyParser MolState (MolcasInput String )
+parserCasscf = do
+               manyTill anyChar $ char '&'
+               oneOf ['R','r'] >> anyLine
+               ini  <- manyTill anyChar (try (string "rlxroot") <|> try (string "Rlxroot") <?> "expecting Relax Root keyword" )
+               spaces >> char '=' >> spaces
+               n    <- intNumber
+               rest <- takeUntilSymbols ['&']
+               return $ RasSCF n ini rest
+
+parserMclr :: MyParser MolState (MolcasInput String )
+parserMclr = do
+             manyTill anyChar $ char '&'
+             oneOf ['M','m'] >> anyLine
+             MCLR <$> (takeUntilSymbols ['&'])
+             
+
+parserAlaska :: MyParser MolState (MolcasInput String )
+parserAlaska = do
+               manyTill anyChar $ char '&'
+               (oneOf ['A','a']) >> anyLine
+               return $ Alaska ""
+--                manyTill anyChar $ try (oneOf ['&','>']) <|> try eof  
+
+
+isInputRasscf :: (MolcasInput String) -> Bool
+isInputRasscf x = case x of
+                       RasSCF _ _ _ -> True
+                       otherwise    -> False
+
+parserGatewayQM :: Int -> MyParser MolState [AtomQM]
+parserGatewayQM n = try $ parserAtoms n
+
+parserAtoms:: Int -> MyParser MolState [AtomQM]
+parserAtoms numat = do 
+    manyTill anyChar (  try (string "&Gate")
+                    <|> try (string "&gate")
+                    <|> try (string "GATE" )
+                    <?> "I was looking for the Gateway keyword" )
+    anyLine                       
+    count numat parserAtom 
+    
+parserAtom :: MyParser MolState AtomQM
+parserAtom =        try parserAtomMM
+                <|> try parserAtomQM
+                
+parserAtomMM :: MyParser MolState AtomQM                 
+parserAtomMM = do    
+    spaces >> (try (string "Basis set\n") <|> try (string "basis set\n"))   -- header 
+    spaces >> anyChar >> string "...... / MM\n"                             -- MM linker 
+    label <- spaces >> manyTill anyChar digit                               -- atomic label
+    manyTill digit space                                                    -- rest of the label numbering
+    xyz   <- count 3 (spaces >> realNumber)                                 -- Cartesian coordinates
+    spaces >> try (string "Angstrom" <|> string "angstrom")
+    spaces >> try (string "Charge" <|> string "charge") >> spaces >> char '=' >> spaces >> realNumber
+    spaces >> try (string "End of Basis\n")
+    return $ AtomQM label xyz
+    
+    
+parserAtomQM :: MyParser MolState AtomQM                 
+parserAtomQM = do
+     spaces >> try (string "Basis set\n" <|> string "basis set\n")
+     anyLine  -- basis Line
+     label <- spaces >> manyTill anyChar digit
+     manyTill digit space
+     xyz   <- count 3 (spaces >> realNumber)
+     manyTill anyChar newline
+     spaces >> try (string "End of Basis\n")
+     return $ AtomQM label xyz
+
+
+     
+ -- ------------------------------------------------------------------------------------------------------------
 --  Molcas Output Block level parsers:
 --  one to every know main block of a output Molcas file, ie: License,Project info and so on
 -- ------------------------------------------------------------------------------------------------------------
@@ -332,7 +464,7 @@ moduleSpent name = try $ do
 sectionParser :: String -> SectionParser
 sectionParser name = case name of
     "alaska" -> do
-                sectionMolecularGradients                  -- Molecular Gradient printout
+                 sectionMolecularGradients                  -- Molecular Gradient printout 
                 <|> sectionsWhatever name                  -- rest of Alaska sections
                 <?> "alaska me cachis!"                    -- You know what I mean, man
     "rasscf" -> do
@@ -375,7 +507,9 @@ sectionMolecularGradients = try $ do
     representation <- oneOfStrings ["a","s1"]
     spaces
     elements       <- many1 molecularGradient
-    return $ AlaskaMolecularGradients representation elements
+    let n = (`div`3) $ length elements
+    espf           <- option [] $ try $ parserGradESPF n
+    return $ AlaskaMolecularGradients representation elements espf
 
 
 -- Try parse molecular gradients items from alaska
@@ -390,6 +524,17 @@ molecularGradient = try $ do
     value          <- realNumber
     newline
     return $ (atom,coord,value)
+    
+parserGradESPF :: Int -> MyParser MolState [[Double]]
+parserGradESPF n = do
+    manyTill anyChar (try $ string "After ESPF")  
+    count 2 (anyLine)
+    count n parserLineXYZ
+   
+parserLineXYZ :: MyParser MolState [Double]
+parserLineXYZ = do 
+             spaces >> intNumber 
+             (count 3 $ spaces >> realNumber)
 
 -- Try parse Ci root data from rasscf Molcas module
 sectionCiCoefficients :: SectionParser
@@ -489,7 +634,7 @@ isCICoeffs (RasSCFCI _r _e _ci) = True
 isCICoeffs _ = False
 isREnergies (RasSCFRE _roots) = True
 isREnergies _ = False
-isMolGrads (AlaskaMolecularGradients _r _grads) = True 
+isMolGrads (AlaskaMolecularGradients _r _grads _gradESPF) = True 
 isMolGrads _ = False
 
 

@@ -2,6 +2,7 @@
 module ConstrainOptimization where
 
 import Control.Applicative
+import Control.Lens hiding ((<.>))
 import Data.Array.Repa as R
 import qualified Data.List as DL
 import Numeric.LinearAlgebra as NLA((|>),(<>),(<.>),(@>), Matrix,Vector,add,buildMatrix,
@@ -29,7 +30,7 @@ driverConstrainedOptimizer job project mol (n,m) norm = do
   let gext = calcFext (n,m) (norm/auN) mol
       hess = buildMatrix (dim) (dim) (\(i,j) -> if i==j then 1 else 0)
       dij x y = if x == y then 1.0 else 0.0
-      (Z:. dim) =  extent . getForce $ mol
+      (Z:. dim) =  mol ^. getForce . to extent 
   result <- mainLoop job project mol hess gext 0
   putStrLn "successful convergence!!"
                           
@@ -37,7 +38,7 @@ mainLoop :: Job -> String -> Molecule -> Hessian -> ExternalGrad -> Step -> IO M
 mainLoop job project mol0 hess gext step = do
    let (mol1,dx)  = updateGeometry mol0 hess gext 
    newmol <- interactWith job project mol1
-   let [oldGrad,newGrad] = fmap  getForce [mol1,newmol]
+   let [oldGrad,newGrad] = fmap  (^.getForce) [mol1,newmol]
        deltaGrad = NLA.fromList . R.toList . computeUnboxedS $ R.zipWith (-) newGrad oldGrad
        newHess = updateHess dx deltaGrad hess
        gradT = totalGrad newmol gext
@@ -49,12 +50,12 @@ mainLoop job project mol0 hess gext step = do
                      else mainLoop job project newmol newHess gext (succ step)
   
 totalGrad :: Molecule -> ExternalGrad -> Array U DIM1 Double
-totalGrad mol gext = R.computeUnboxedS . R.zipWith (+) gext $ getForce mol  
+totalGrad mol gext = R.computeUnboxedS . R.zipWith (+) gext $  mol^.getForce  
 
 updateGeometry :: Molecule -> Hessian -> ExternalGrad -> (Molecule,Position)                                             
-updateGeometry mol hess gext = (mol{getCoord = newGeom},dx)
+updateGeometry mol hess gext = (set getCoord newGeom mol,dx)
   where newGeom = R.computeUnboxedS $ R.zipWith (+) oldgeom dxRepa
-        oldgeom = getCoord mol
+        oldgeom =  mol^.getCoord
         dxRepa =  R.fromListUnboxed (extent oldgeom) . NLA.toList $ dx
         dx =  scaleDX $ newtonRaphson grad hess
         grad = R.toList $ totalGrad mol gext
@@ -79,7 +80,7 @@ calcFext (n,m) normFext mol = R.fromListUnboxed sh xs
          [v1,v2] = fmap (\j -> let i = 3*(pred j) in fmap (coords !) [(Z:.i),(Z:.i+1),(Z:.i+2)]) [m,n]
          deltaF = fmap (*normFext) . normalize $ DL.zipWith (-) v2 v1
          sh@(Z:. dim) = extent coords
-         coords = getCoord mol
+         coords =  mol^.getCoord
          numat = pred (dim `div` 3)
        
          

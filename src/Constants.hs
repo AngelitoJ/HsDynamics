@@ -9,6 +9,7 @@ h = recip (2*pi)         -- planck's constant
 a0 = 0.529177249         -- from bohr to angstrom
 au_time = 2.41888432e-2  -- from femtoseconds to au
 auN = 8.2387225e-8       -- atomic unit of force  a.u.
+ev2kcal = 23.061         -- ElectronVolt to kcal/mol
 
 mapCharge2Label :: [(Int,String)]
 mapCharge2Label = [(1,"H"),(2,"He"),(3,"Li"),(4,"Be"),(5,"B"),

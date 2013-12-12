@@ -18,7 +18,7 @@ synopsis:          Molecular Dynamics
 homepage:            http://www2.uah.es/resmol/
 license:             BSD3
 license-file:        LICENSE
-author:              Felipe Zapata, Angel Alvarez 
+author:              Felipe Zapata, Angel Alvarez, Alessio Valentini
 
 -- An email address to which users can send suggestions, bug reports, and 
 -- patches.
@@ -40,31 +40,39 @@ executable HsDynamics
   ghc-options:
     -rtsopts
     -threaded
+  
+  extensions:
+    BangPatterns
+    DeriveFunctor
+    TemplateHaskell
+     
   build-depends:
       async     == 2.0.*
-    , bytestring == 0.9.*
+    , bytestring == 0.10.*
     , bytestring-lexing
-    , base >= 4.5 && < 4.6
+    , base ==  4.6.*
     , Cabal
     , containers
     , directory
     , EitherT      == 0.2.*
     , filepath
     , hmatrix   
-    , lens  
+    , lens         == 3.10.*
     , mtl
     , normaldistribution == 1.1.*
-    , parallel 
+    , parallel
     , parsec == 3.1.*
     , process   == 1.1.*
     , random == 1.0.*
-    , repa   ==  3.2.1.1.*
+    , repa
     , split
     , strict
     , transformers == 0.3.*
     , unix
-    ,vector == 0.9.*
-   
+    ,vector == 0.10.*
+
+    
+    
 
   hs-source-dirs:      src
   main-is: Main.hs

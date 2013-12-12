@@ -5,10 +5,11 @@ module Tully (
              ,tullyHS
              ) where
 
-import  Control.Applicative             
+import Control.Applicative             
 import Control.Arrow ((&&&))   
 import Control.Concurrent (forkIO)
 import Control.Exception (assert)
+import Control.Lens  hiding (Index)
 import Data.List as L
 import Data.Array.Repa as R hiding ((++))
 import Data.Complex
@@ -62,9 +63,9 @@ tullyHS  dt aMatrix step mol = do
     lo <- SR.randomIO
     let eTot          = calcTotalEnergy mol
         seed          = SR.mkStdGen lo
-        random        = take nSubStep $ filter (> 10**(-4)) $ aleGenRan seed
-        state         = getElecSt mol         
-        (energies,coeffs) = getEnergy &&& getCoeffCI $ mol
+        random        = take nSubStep $ filter (> 10**(-4)) $ aleGenRan seed        
+        energies      = mol ^. getEnergy
+        coeffs        = mol ^. getCoeffCI 
         [p,pp,ppp]    = coeffs
         [vp,vpp,vppp] = energies
         states        = 2
@@ -84,13 +85,12 @@ tullyHS  dt aMatrix step mol = do
                                  let intSt = pred newRelax
                                      newSt    =  toEnum  $ intSt -- Tully Modules number S0 with 1 Dynamics with 0 
                                      newCoeff = correctedp : (tail coeffs)
-                                     currentEnergy = let xs = head . getEnergy $ mol in xs !! intSt
+                                     currentEnergy = let xs = mol^.getEnergy . to head   in xs !! intSt
                                      newVel = scaleVelocity eTot currentEnergy mol
-                                     newMol = mol{getCoeffCI=newCoeff,getElecSt = Left newSt, getVel = newVel}  
+                                     newMol = set getCoeffCI newCoeff $ set getElecSt (Left newSt) $ set getVel newVel  mol  
                                  appendFile "result.out" $ "Hop to Root: " ++ (show newSt) ++ "\n" 
                                  return (newMol,newAmatrix)
                                      
-
 initialAMTX :: Molecule -> MatrixCmplx
 initialAMTX mol = [fun i j | i<- [0..st], j <- [0..st] ]
   where st = calcElectSt mol
@@ -99,7 +99,7 @@ initialAMTX mol = [fun i j | i<- [0..st], j <- [0..st] ]
                                          
                                      
 scaleVelocity :: Double -> Double -> Molecule -> Array U DIM1 Double
-scaleVelocity etot ep mol = let (vs,ms) = getVel &&& getMass $ mol
+scaleVelocity etot ep mol = let [vs,ms] = fmap (mol^.) [getVel,getMass]
                                 ek = calcEk vs ms
                                 sub = abs $ etot - ep   
                                 s = sqrt (sub/ek)
@@ -112,7 +112,9 @@ driver aMat rlxRt step cb mol | step <= getSubStep cb = do
            dMatS   = matrixDsub cb step
            aDT     = calculateAdt cb vMatS dMatS aMat
            aMat'   = integrateA cb aMat aDT
-           probab  = probability cb aMat' dMatS rlxRt 
+--           probab  = probability cb aMat' dMatS rlxRt 
+        probab  <- probabilityIO cb aMat' dMatS vMatS rlxRt
+        let
            newRoot = checkHop cb probab rlxRt step mol        
            states  = getStates cb
            aMat''  = perGranCorr cb aMat' vMatS newRoot   
@@ -292,17 +294,15 @@ integrateA cb aMat aMatDT = let
               rightDT  = dt / (fromIntegral nSubStep) 
               in L.zipWith (\x y -> (x) + ((y)*(rightDT :+ 0.0))) aMat aMatDT
 
-probability :: CommonBlock -> MatrixCmplx -> MatrixReal -> RlxRoot -> MatrixReal
-probability cb aMat dMat rlxRt = let 
+probability :: CommonBlock -> MatrixCmplx -> MatrixReal -> MatrixReal -> RlxRoot -> MatrixReal
+probability cb aMat dMat vMat rlxRt = let 
     states           = getStates cb
     dt               = getDt cb
     nSubStep         = getSubStep cb
-    vValues          = getVp cb
     fromArrtoMat v   = [if i==j then (v!!i :+ 0.0) else (0.0 :+ 0.0) | i <- [0.. pred (length v)], j <- [0..pred (length v)]] 
-    vMat             = fromArrtoMat vValues
     dMatC            = fmap (\x -> x :+ 0.0) dMat
---    matrixB          = L.zipWith (\x y -> (-2) * (realPart $ (conjugate $ x) * y )) aMat dMatC
-    matrixB          = L.zipWith3 (\x y z -> 2 * (imagPart ((conjugate $ x) * z)) - (2 * (realPart $ (conjugate $ x) * y ))) aMat dMatC vMat
+    vMatC            = fmap (\x -> x :+ 0.0) vMat
+    matrixB          = L.zipWith3 (\x y z -> 2 * (imagPart ((conjugate $ x) * z)) - (2 * (realPart $ (conjugate $ x) * y ))) aMat dMatC vMatC
     rightIndex (n,m) = n*states + m
     columnI n        = fmap (+n) $ take states $ iterate (+states) 0
     bColumn          = fmap (matrixB !!) $ columnI (rlxRt-1)
@@ -310,7 +310,47 @@ probability cb aMat dMat rlxRt = let
     rightDT          = dt / (fromIntegral nSubStep)
     probab'          = fmap (\x -> (x*rightDT)/aTemTemp) bColumn
     isPositive  x    = if x<0 then 0.0 else x
-    in fmap isPositive probab'
+    probab''         = fmap isPositive probab'
+    in makeRlxRtZero probab'' rlxRt
+    
+
+makeRlxRtZero :: [Double] -> Int -> [Double]
+makeRlxRtZero xs i = let tuplas         = zip xs [0..]
+                         ind            = pred i
+                         tuplaFiltered  = fmap (\x -> if snd x /= ind then x else (0.0,ind)) tuplas
+                     in fmap fst tuplaFiltered
+
+
+probabilityIO :: CommonBlock -> MatrixCmplx -> MatrixReal -> MatrixReal -> RlxRoot -> IO(MatrixReal)
+probabilityIO cb aMat dMat vMat rlxRt = do
+    let states           = getStates cb
+        dt               = getDt cb
+        nSubStep         = getSubStep cb
+        fromArrtoMat v   = [if i==j then (v!!i :+ 0.0) else (0.0 :+ 0.0) | i <- [0.. pred (length v)], j <- [0..pred (length v)]] 
+        dMatC            = fmap (\x -> x :+ 0.0) dMat
+        vMatC            = fmap (\x -> x :+ 0.0) vMat
+        matrixB          = L.zipWith3 (\x y z -> 2 * (imagPart ((conjugate $ x) * z)) - (2 * (realPart $ (conjugate $ x) * y ))) aMat dMatC vMatC
+        rightIndex (n,m) = n*states + m 
+        columnI n        = fmap (+n) $ take states $ iterate (+states) 0
+        bColumn          = fmap (matrixB !!) $ columnI (rlxRt-1)
+        aTemTemp         = realPart $ aMat !! (rightIndex (rlxRt-1,rlxRt-1))
+        rightDT          = dt / (fromIntegral nSubStep)
+        probab'          = fmap (\x -> (x*rightDT)/aTemTemp) bColumn
+        isPositive x     = if x<0 then 0.0 else x
+        probab''         = fmap isPositive probab'
+        probab'''        = makeRlxRtZero probab'' rlxRt
+        f1 =  "A:"
+        f2 = show aMat
+        f3 = "B:"
+        f4 = show matrixB
+        f5 = "Values V"
+        f6 = show vMat
+        f7 = "dmat complex"
+        f8 = show dMatC
+        string  =  L.foldl1' (++) [f1,f2,f3,f4,f5,f6,f7,f8]
+    appendFile "TullyOutput" string
+    return $ probab'''
+
 
 checkHop :: CommonBlock -> MatrixReal -> SubStepIndex -> RlxRoot -> Molecule -> RlxRoot
 checkHop cb probab rlxRt step mol = let
@@ -320,9 +360,9 @@ checkHop cb probab rlxRt step mol = let
          etot      = calcTotalEnergy mol
          jumpTo    = dropWhile ((<random).fst) $ zip sumProb [1..]
          newRoot   = snd . head $ jumpTo
-         energies  = head . getEnergy $ mol 
+         energies  = mol ^. getEnergy . to head 
          jumpEnergy = energies !! (pred newRoot)
-         in if jumpTo == [] then rlxRt else if (abs jumpEnergy) > (abs etot) then rlxRt else newRoot
+         in if jumpTo == [] then rlxRt else if jumpEnergy > etot then rlxRt else newRoot
 
 perGranCorr :: CommonBlock -> MatrixCmplx -> MatrixReal -> RlxRoot -> MatrixCmplx
 perGranCorr cb aMat vMat rlxRt = 

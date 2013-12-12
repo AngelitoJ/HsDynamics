@@ -1,0 +1,8 @@
+InitialState = S1                               # Initial Electronic State
+Time         = 500                              # total time in fs
+Step         = 0.5                              # integration step in fs
+Theory       = CASSCF(4,4,NRoot=2,StateAverage)/6-31g*
+Force        = 0.0                              # External Force in nN
+Anchor       = [6,8]                            # atoms on which the force are  applied
+Project = Palmeiro
+

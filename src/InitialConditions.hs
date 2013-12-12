@@ -1,23 +1,27 @@
 {-# Language BangPatterns #-}
 
 
-module InitialConditions  (
+module InitialConditions {- (
                            initialConditions
                           ,initializeMolcasOntheFly
+                          ,initializeMolcasTinker
                           ,initializeRC
                           ,initializeSystemOnTheFly
                           ,parseConnections
-                          ,parseInputDynamics
-                          ) where
+                          ,parseFileInput
+                          ,parseInput
+                          )-} where
 
 import qualified Data.List as DL
 import qualified Data.Vector.Unboxed as VU
-import Control.Applicative
-import Control.Arrow ((&&&))
+import Control.Applicative hiding ((<|>))
+import Control.Arrow ((&&&),first)
+import Control.Lens 
 import Control.Monad ((<=<),liftM,mplus)
 import Data.Array.Repa as R
 import Data.Array.Repa.Unsafe as R
-import Data.Char(toUpper)
+import qualified Data.Vector as V
+import Data.Char(toUpper,toLower)
 import Data.Either (either)
 import Data.Maybe (fromMaybe)
 import qualified Data.Map as M
@@ -25,7 +29,8 @@ import qualified Data.Monoid as DM
 import Data.Random.Normal
 import System.IO.Strict as IOS
 import System.Random
-import Text.ParserCombinators.Parsec
+import Text.Parsec
+import Text.Parsec.ByteString
 
 
 -- internal modules
@@ -33,7 +38,11 @@ import APIparser
 import CommonTypes
 import Constants
 import Gaussian
+import Molcas
 import ReactionCoordinate
+import ParsecNumbers
+import ParsecText
+import TinkerQMMM
 
 -- =====================> <====================
 
@@ -46,45 +55,171 @@ initializeRC numat = M.fromList [(i,(0,v0)) | i <- [0..39]]
   where dim = 3*numat-6
         v0 = VU.replicate dim 0.0
 
--- =====> <==========
+-- =========================> <========================
 
-parseInputDynamics :: FilePath -> IO InitialDynamics
-parseInputDynamics file = do
-  r <- lines `fmap` IOS.readFile file
-  let (ls,ts) = splitAt 5 r
-      [st,t,dt,mf,a] = fmap (head .words) ls
-      [time,delta,modForce] = fmap (\x -> read x :: Double)  [t,dt,mf]
-      anchor = (read a) :: [Int]
-      project = head . words $ head ts
-  return $ InitialDynamics (read st) time delta modForce anchor project
+-- | Parser to read the initial conditions declare in the input file
+parseFileInput :: MyParser () InitialDynamics -> FilePath ->  IO InitialDynamics 
+parseFileInput parser fileName = do
+  r <- parseFromFile parser fileName 
+  case r of
+       Left msg -> fail $ show msg
+       Right xs -> return xs
 
+parseInput :: MyParser () InitialDynamics
+parseInput = do 
+  elecSt          <- parserElectronicState
+  time            <- parserTotalTime
+  step            <- parserIntegrationStep
+  (theory,basis)  <- parserTheory
+  extForce        <- parserExtenalforce
+  anchor          <- parserAnchor        -- atoms on which the external forces are applied
+  project         <- parserProject  
+  return $ InitialDynamics elecSt time step theory basis extForce anchor project
+
+
+-- | initial Electronic state
+parserElectronicState :: MyParser () Singlet
+parserElectronicState = do
+  keyword <- parseKeyword
+  st <- (\x -> read x :: Singlet) <$> manyTill anyChar space
+  anyLine
+  if (keyword)  == "initialstate" 
+         then return st
+         else fail "An initial electronic state is mandatory"
+                               
+parserTotalTime :: MyParser () Double 
+parserTotalTime = do
+  keyword <- parseKeyword
+  time    <- realNumber
+  anyLine
+  if keyword == "time" then return time
+                       else fail " The total time of the dynamics is mandatory"
+                       
+parserIntegrationStep :: MyParser () Double
+parserIntegrationStep = do
+  keyword <- parseKeyword
+  step    <- realNumber
+  anyLine
+  if keyword == "step" then return step
+                       else fail " The total Integatin step of the dynamics is mandatory"
+                       
+-- | in case of Gaussian Job a level of theory is required                       
+parserTheory :: MyParser () (TheoryLevel,String)
+parserTheory = option (Unspecified,"Unspecified") $ do
+  spaces 
+  try (string "Theory") <|> try (string "theory")
+  spaces >> char '=' >> spaces
+  theory  <- parseLevel
+  basis   <- manyTill anyChar space
+  anyLine
+  return (theory,basis)
+  
+  where parseLevel = try parserCasMolcas <|> try parserHF <?> "theory level"
+        parserHF   = do
+                    try (string "HF") <|>  try (string "hf")
+                    return HF
+        parserCasMolcas = do          
+                   try (string "CASSCF") <|>  try (string "casscf") 
+                   char '('
+                   electrons <- intNumber
+                   char ','
+                   orbitals <- intNumber
+                   manyTill anyChar (char '=')
+                   rlxRoot <- intNumber       
+                   rest <- manyTill anyChar (char ')')                   
+                   return $ CASSCF (electrons,orbitals) rlxRoot  rest               
+        funParser s p = case runP p () "" s of
+                             Left msg -> error $ show msg
+                             Right x  -> x  
+  
+
+parserExtenalforce :: MyParser () Double
+parserExtenalforce  = option 0 $ try $ do
+  spaces
+  try (string "Force") <|> try (string "force")
+  parseEqual
+  force   <- realNumber
+  anyLine
+  return force
+  
+-- | a list of atom numbers where the external force is applied  
+parserAnchor :: MyParser () [Int]
+parserAnchor  = option [] $ try $ do
+  spaces
+  try (string "Anchor") <|> try (string "anchor")
+  parseEqual
+  anchor  <- (\xs -> read xs :: [Int]) <$> manyTill anyChar space
+  anyLine
+  return anchor
+
+-- | A string which gives name to the job  
+parserProject :: MyParser () String
+parserProject = option [] $ try $ do
+  spaces
+  try (string "Project") <|> try (string "project")
+  parseEqual
+  project <- manyTill anyChar space
+  anyLine
+  return project
+                       
+parseKeyword :: MyParser () String
+parseKeyword = do
+  spaces
+  keyword <- manyTill anyChar space
+  parseEqual
+  return $ toLower <$> keyword
+  
+parseEqual :: MyParser () ()
+parseEqual = spaces *> char '=' *> spaces
+
+-- =====================> Initial Conditions <====================
+ 
 -- function to initialize on the fly molecular dynamics using Molcas  
 initializeMolcasOntheFly :: FilePath -> Singlet -> Temperature -> IO Molecule
 initializeMolcasOntheFly xyz st temp = do
-  dat <- IOS.readFile xyz
-  case runParser parseMoleculeXYZ () "" dat of
+  r <- parseFromFile parseMoleculeXYZ xyz
+  case r of
        Left msg -> error $  show msg
        Right xs -> initializeBaseOnXYZ xs st temp
--- 
-       
+   
+initializeMolcasZeroVel ::  FilePath -> Singlet -> Temperature -> IO Molecule
+initializeMolcasZeroVel xyz st temp = do
+  r <- parseFromFile parseMoleculeXYZ xyz
+  case r of
+       Left msg -> error $  show msg
+       Right xs -> do 
+                  mol <- initializeBaseOnXYZ xs st temp
+                  let dim = 3 * (mol ^. getAtoms . to length)
+                      zeroVel = R.fromUnboxed (Z:. dim) $ VU.replicate dim 0
+                  return $ set getVel zeroVel mol    
+                       
+ 
 initializeBaseOnXYZ :: [(Label,[Double])] -> Singlet -> Temperature -> IO Molecule
 initializeBaseOnXYZ xs st temp = do
-  let (atoms,coord) = unzip xs
+  let (labels,coord) = unzip xs
       f2U (c:cs)    = toUpper c : cs
-      numat         = DL.length atoms
+      numat         = DL.length labels
       dim           = 3*numat
       repaCoord     = fromListUnboxed (Z :. dim) . fmap (/a0) $ concat coord
-      masses        = fmap (\k -> fromMaybe msg $ M.lookup (f2U k) atom2Mass) atoms
+      masses        = fmap (\k -> fromMaybe msg $ M.lookup (f2U k) atom2Mass) labels
       msg           = error "Sorry boy, but I don't know some of your input atoms"
-      aumasses      = fromListUnboxed (Z:.numat) $ fmap (*amu) masses     
+      aumasses      = fromListUnboxed (Z:.numat) $ fmap (*amu) masses   
+      forces        = R.fromUnboxed (Z:.dim) $ VU.replicate dim 0
   velocities <- genMaxwellBoltzmann aumasses temp 
-  return $ defaultMol{
-                     getCoord=repaCoord
-                    ,getVel=velocities
-                    ,getMass=aumasses
-                    ,getAtoms=atoms
-                    ,getElecSt=Left st
-                     }
+  return $ defaultMol & getCoord .~ repaCoord 
+                      & getVel   .~ velocities 
+                      & getForce .~ forces
+                      & getMass  .~ aumasses 
+                      & getAtoms .~ labels 
+                      & getElecSt.~ (Left st) 
+                     
+initializeMolcasTinker :: FilePath -> Singlet -> Temperature -> Int -> IO Molecule  
+initializeMolcasTinker molcasInput st temp numat = do
+  molcasQM   <- parserInputMolcasQM molcasInput $ parserGatewayQM numat
+  let atoms  = takeLabelCoordinates <$> molcasQM
+  initializeBaseOnXYZ atoms st temp
+                                             
+  where takeLabelCoordinates (AtomQM label xyz) = (label,xyz)  
   
 -- |collects the initial required to initialize a dynamic on the fly
 initializeSystemOnTheFly :: FilePath -> Singlet -> Temperature-> IO Molecule
@@ -96,12 +231,13 @@ initializeSystemOnTheFly file st temp = do
          labels = fmap (charge2Label .floor) $ getData "Charges"
          aumasses = computeUnboxedS $ R.map (*amu) masses
          forces = computeUnboxedS $ R.map (negate) grad
-         initialMol = defaultMol
      velocities <- genMaxwellBoltzmann aumasses temp
-     return $ initialMol{getCoord=coord,getVel=velocities,getForce=forces,
-                         getMass=aumasses,getAtoms=labels,getElecSt=Left st}
-                          
-
+     return $ defaultMol & getCoord .~ coord 
+                         & getVel   .~ velocities 
+                         & getForce .~ forces
+                         & getMass  .~ aumasses 
+                         & getAtoms .~ labels 
+                         & getElecSt.~ (Left st)                          
 -- =============> <================
         
 initialConditions :: [Double] -> [Double] -> [EnergyDerivatives] -> Connections -> Temperature -> IO Molecule
@@ -114,9 +250,13 @@ initialConditions !cartCoord !masses !dervEs !conex !t = do
          internals = calculateInternals conex (R.toUnboxed repaCoord)
          initialMol = defaultMol
          fc = FC internals conex
-     return $ initialMol{getCoord=repaCoord,getVel=velocities,getForce=forces,
-                         getMass=repaMass,getDervEn=dervEs,getElecSt = Left S0, getFCStruc= fc}
-
+     return $ initialMol & getCoord .~ repaCoord
+                         & getVel   .~ velocities 
+                         & getForce .~ forces
+                         & getMass  .~ repaMass
+                         & getElecSt.~ (Left S0)
+                         & getDervEn.~ dervEs
+                         & getFCStruc.~fc
 
 genMaxwellBoltzmann :: Array U DIM1 Double -> Temperature -> IO (Array U DIM1 Double)
 genMaxwellBoltzmann !ms !t = do
@@ -137,28 +277,5 @@ parseConnections file = do
 atom2Mass :: M.Map String Double 
 atom2Mass = M.fromList [("H",1.00782504),("C",12.0),("N",14.0),("O",16.0)]
   
--- readArrayDIM1FIle :: FilePath -> IO (Array U DIM1 Double)
--- readArrayDIM1FIle file = do
---    vs <- readVectorFromFile file
---    return $ R.fromUnboxed (Z:. VU.length vs) vs
--- 
--- readArrayDIM2FIle :: FilePath -> IO (Array U DIM2 Double)
--- readArrayDIM2FIle file = do
---    vs <- readVectorFromFile file
---    let dim = VU.length vs
---    return $ R.fromUnboxed (Z:. dim :. dim) vs
---    
---   
--- readVectorFromFile :: FilePath -> IO (VU.Vector Double)
--- readVectorFromFile file = do  
---     s   <- L.readFile file
---     return $ parseL s
---  
--- -- Fill a new vector from a file containing a list of numbers.
--- parseL :: L.ByteString -> VU.Vector Double
--- parseL = VU.unfoldr step
---   where
---      step !s = case L.readDouble s of
---         Nothing       -> Nothing
---         Just (!k, !t) -> Just (k, L.tail t)  
+
 

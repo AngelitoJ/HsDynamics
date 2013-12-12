@@ -11,15 +11,14 @@ import Data.Complex
 import Data.Maybe ( fromMaybe )
 import Control.Concurrent
 import Control.Concurrent.Async
+import Control.Lens ((^.),to)
 import Control.Monad ((<=<),liftM)
 import Control.Monad.Trans.Either
 import System.Environment ( getArgs )
 import System.FilePath
 import System.Cmd ( system )
 import System.Console.GetOpt
-import Text.ParserCombinators.Parsec
 import Text.Printf
-
 
 -- Cabal imports
 import Data.Version (showVersion)
@@ -28,17 +27,17 @@ import Paths_HsDynamics as HsDynamics
 
 -- internal imports
 import APIparser
-import BasisParser
 import CommonTypes
 import Constants  
 import ConstrainOptimization
 import Dynamics
 import InitialConditions
+import InternalCoordinates
 import Gaussian
-import GenericParser
 import Molcas
 import OptsCheck
 import Tasks
+import TinkerQMMM
 import Tully
 
 
@@ -49,7 +48,7 @@ authors = "@2013  Felipe Zapata, Alessio Valentini, Angel Alvarez"
 -- default options
 defaultOptions    = Options
  { optDump        = False
- , optModules     = [("constrained",processConstrained),("dynamics",processDynamics),("externalForces",processExternalForces),("molcas",processMolcas),("generic",processGenericFiles),("basis",processBasisFiles)]
+ , optModules     = [("constrained",processConstrained),("externalForces",processExternalForces),("molcas",processMolcas),("palmeiro",processPalmeiro),("molcasTinker",processMolcasTinker),("molcasZeroVel",processMolcasZeroVelocity),("prueba",processPrueba)]
  , optMode        = Nothing
  , optVerbose     = False
  , optShowVersion = False
@@ -103,9 +102,8 @@ progHeader c =
         currVersion :: String
         currVersion = showVersion HsDynamics.version
         core2string :: Int -> String
-        core2string c = case c > 1 of
-                             True -> "cores"
-                             False -> "core"
+        core2string c = if c > 1 then  "cores"
+                                 else  "core"
 
 header :: String
 header = "Usage: Options [OPTION...] files..."
@@ -121,40 +119,117 @@ printFiles opts@Options { optInput = files, optDataDir = datadir } = do
             printargs :: String -> IO ()
             printargs path = putStrLn $ "Processing path: " ++ path ++ "..."
 
-processGenericFiles :: Options -> IO ()
-processGenericFiles opts@Options { optInput = files, optDataDir = datadir } = do
-    mapM_ processGenericFile filepaths 
-    where
-            dir = fromMaybe "" datadir
-            filepaths = zipWith (combine) (cycle [dir]) files
-
-processBasisFiles :: Options -> IO ()
-processBasisFiles opts@Options { optInput = files, optDataDir = datadir } = do
-    mapM_ processBasisFile filepaths 
-    where
-            dir = fromMaybe "" datadir
-            filepaths = zipWith (combine) (cycle [dir]) files
-
-
 -- =============> Drivers to run the molecular dynamics simulations in Molcas <==============
+
+processPrueba :: Options -> IO ()
+processPrueba opts =   do
+  let temp = fromMaybe 298 $ optTemperature opts
+      files@[xyz,ctl,input] =  optInput opts
+  ctl <- getSuffixFile "." ".ctl"
+  conex <- parserFileInternasCtl ctl
+  initData <- parseFileInput parseInput input
+  let getter   = (initData ^.)
+  initialMol  <- initializeMolcasOntheFly xyz (getter getInitialState) temp
+  let ints = calcInternals conex initialMol
+  print ints
+
+
 processMolcas :: Options -> IO ()
 processMolcas opts = do
   let temp = fromMaybe 298 $ optTemperature opts
       files@[xyz,molcas,input] =  optInput opts
-  InitialDynamics st time dt externalForce anchor project <- parseInputDynamics input
-  initialMol <- initializeMolcasOntheFly xyz st temp
-  let numat = length $ getAtoms initialMol
-      [auTime,audt] = fmap (/au_time) [time,dt]
+  initData <- parseFileInput parseInput input
+  let getter   = (initData ^.)
+      project  = getter getProject
+  initialMol  <- initializeMolcasOntheFly xyz (getter getInitialState) temp
+  molcasInput <- parseMolcasInputFile molcas
+  let numat = initialMol ^. getAtoms . to length
+      [auTime,audt] = fmap (/au_time) $ getter `fmap` [getTime,getdt] 
       thermo = initializeThermo numat temp
-      step = 10
-      job = Molcas $ project 
+      step = 1
+      job = Molcas molcasInput
       aMatrix = initialAMTX initialMol
   mol <- interactWith job project initialMol
-  constantForceDynamics mol job thermo temp auTime audt anchor externalForce aMatrix step
+  constantForceDynamics mol job thermo temp auTime audt (getter getForceAnchor) (getter getExtForceMod) aMatrix step project
+  
+
+processMolcasZeroVelocity :: Options -> IO ()
+processMolcasZeroVelocity opts = do
+  let temp = fromMaybe 298 $ optTemperature opts
+      files@[xyz,molcas,input] =  optInput opts
+  initData <- parseFileInput parseInput input
+  let getter   = (initData ^.)
+      project  = getter getProject
+  initialMol  <- initializeMolcasZeroVel xyz (getter getInitialState) temp
+  molcasInput <- parseMolcasInputFile molcas
+  let numat = initialMol ^. getAtoms . to length
+      [auTime,audt] = fmap (/au_time) $ getter `fmap` [getTime,getdt] 
+      thermo = initializeThermo numat temp
+      step = 1
+      job = Molcas molcasInput
+      aMatrix = initialAMTX initialMol
+  mol <- interactWith job project initialMol
+  constantForceDynamics mol job thermo temp auTime audt (getter getForceAnchor) (getter getExtForceMod) aMatrix step project  
   
   
+processMolcasTinker :: Options -> IO ()
+processMolcasTinker opts = do
+  let temp = fromMaybe 298 $ optTemperature opts
+      files@[tinkerKey,tinkerXYZ,molcasInput,input] =  optInput opts      
+  initData <- parseFileInput parseInput input
+  let getter = (initData ^.)
+      project  = getter getProject
+  tinkerQMMM <- parserXYZFile tinkerXYZ
+  atomsQM    <- parserKeyFile tinkerKey
+  initialMol <- initializeMolcasTinker molcasInput (getter getInitialState) temp $ length atomsQM
+  let numat = initialMol ^. getAtoms . to length
+      thermo = initializeThermo numat temp
+      [auTime,audt] = fmap (/au_time) $ getter `fmap` [getTime,getdt] 
+      step = 1
+      tinkerCommand = "prueba"
+      job = MolcasTinker atomsQM tinkerCommand
+  print initialMol
+--   driverMolcasTinker initialMol audt auTime thermo job project step
+   
+driverMolcasTinker :: Molecule -> DT -> Temperature -> Thermo -> Job -> String  -> Step -> IO ()  
+driverMolcasTinker mol dt t thermo job project step = 
+  if t <0 then return ()
+          else do 
+            let es = concatMap (printf "%.6f  ") $ mol ^. getEnergy . to head
+            printMol mol es
+            printData mol step
+            (newMol,newThermo) <- dynamicNoseHoover mol dt t thermo job project
+            driverMolcasTinker newMol dt (t-dt) newThermo job project (succ step)
+    
+-- =============> Drivers to call Palmeiro Interpolator <======================================
+
+-- | Molecular Dynamics using interpolated PES 
+processPalmeiro :: Options -> IO ()
+processPalmeiro opts = do
+  let temp = fromMaybe 298 $ optTemperature opts
+      files@[xyz,input] =  optInput opts         
+  initData <- parseFileInput parseInput input
+  let getter = (initData ^.)
+  initialMol  <- initializeMolcasOntheFly xyz (getter getInitialState) temp
+  ctl         <- getSuffixFile "." ".ctl"
+  conex       <- parserFileInternasCtl ctl
+  let numat = initialMol ^. getAtoms . to length
+      [auTime,audt] = fmap (/au_time) $ getter `fmap` [getTime,getdt] 
+      thermo        = initializeThermo numat temp
+      job           = Palmeiro conex ["/S0","/S1"]
+  palmeiroLoop initialMol audt temp thermo job "" 1
   
-            
+palmeiroLoop :: Molecule -> DT -> Temperature -> Thermo -> Job -> String -> Step -> IO ()
+palmeiroLoop  mol dt t thermo job project step = do
+    print $ "Step: " ++ show step
+    if t > 0 then do
+                  (newMol,newThermo) <- dynamicNoseHoover mol dt t thermo job project  
+                  printMol  newMol ""
+                  printData newMol step
+                  return ()
+--                   palmeiroLoop newMol dt (t - dt) newThermo job project (succ step)
+             else return ()
+
 -- =============> Drivers to run the molecular dynamics simulations in Gaussian <==============
 
 -- | on the fly molecular dynamics with applied external forces
@@ -162,75 +237,40 @@ processExternalForces :: Options -> IO ()
 processExternalForces opts = do
   let temp = fromMaybe 298 $ optTemperature opts
       [input,fchk,out] = optInput opts 
-  InitialDynamics st time dt externalForce anchor theoryLevels <- parseInputDynamics input
-  mol <- (updateMultiStates out) <=< (initializeSystemOnTheFly fchk st) $ temp
-  let numat = length $ getAtoms mol
-      thermo = initializeThermo numat temp
-      [auTime,audt] = fmap (/au_time) [time,dt]
-      aMatrix = initialAMTX mol 
-      step = 1
-      job = Gaussian theoryLevels
-  constantForceDynamics mol job thermo temp auTime audt anchor externalForce aMatrix step
+  initData <- parseFileInput parseInput input
+  let getter = (initData ^.)
+  mol <- (updateMultiStates out) <=< (initializeSystemOnTheFly fchk $ getter getInitialState) $ temp
+  let numat         = mol ^. getAtoms . to length
+      thermo        = initializeThermo numat temp
+      [auTime,audt] = fmap (/au_time) $ getter `fmap` [getTime,getdt] 
+      aMatrix       = initialAMTX mol 
+      step          = 1
+      theoryLevels  = getter getTheory
+      basis         = getter getBasis
+      job = Gaussian (theoryLevels,basis)
+  constantForceDynamics mol job thermo temp auTime audt (getter getForceAnchor) (getter getExtForceMod) aMatrix step "TullyExternalForces"
   
-constantForceDynamics ::  Molecule -> Job -> Thermo -> Temperature -> Time -> DT-> Anchor -> Double -> MatrixCmplx -> Int -> IO ()
-constantForceDynamics mol job thermo temp time dt anchor externalForce aMatrix step = do
+constantForceDynamics ::  Molecule -> Job -> Thermo -> Temperature -> Time -> DT-> Anchor -> Double -> MatrixCmplx -> Int -> Project -> IO ()
+constantForceDynamics mol job thermo temp time dt anchor externalForce aMatrix step project = do
    if time < 0.0 then return ()
                  else do 
-                  let es = concatMap (printf "%.6f  ") . head . getEnergy $ mol
+                  let es = concatMap (printf "%.6f  ") $ mol ^. getEnergy . to head
                   printMol mol es
                   printData mol step
-                  (newMol,newThermo) <- dynamicExternalForces mol dt temp thermo job "TullyExternalForces" anchor externalForce
+                  (newMol,newThermo) <- dynamicExternalForces mol dt temp thermo job project anchor externalForce
                   (tullyMol,newAmatrix) <- tullyDriver dt aMatrix step newMol
                   printGnuplot newAmatrix tullyMol
-                  constantForceDynamics tullyMol job newThermo temp (time-dt) dt anchor externalForce newAmatrix (succ step)
+                  let [oldRoot,newRoot] = (^.getElecSt) `fmap` [newMol,tullyMol]
+                      newJob            =  if oldRoot == newRoot then job else updateNewJobInput job tullyMol
+                  constantForceDynamics tullyMol newJob newThermo temp (time-dt) dt anchor externalForce newAmatrix (succ step) project
   
   
 tullyDriver ::  DT -> MatrixCmplx -> Int ->  Molecule -> IO (Molecule,MatrixCmplx)
 tullyDriver dt aMatrix step mol =
-  if (length $ getCoeffCI mol) /= 3  -- At least 3 set of CI coefficients are required in oder to initialize the Tully
+  if (mol^. getCoeffCI . to length) /= 3  -- At least 3 set of CI coefficients are required in oder to initialize the Tully
      then return (mol,aMatrix) 
      else tullyHS dt aMatrix step mol
-                
- 
-    
-  
--- Felipe hizo que la mierda se manifestara en esta función tan horrible!!!
-processDynamics :: Options -> IO ()
-processDynamics = undefined
--- processDynamics  opts@Options { optInput = (fileHess2:fileGrad2:fileHess1:fileGrad1:filestate2 :filestate1:input:_)} =  
---   do [n,temp,time,dt] <- ((fmap readDouble) . words ) `fmap` (readFile input)
---      let numat  = floor n
---          dimInt = 3*n-6
---          [auTime,auDt] = fmap (/au_time) [time,dt]
---          thermo = initializeThermo numat temp  
---          initialRC = initializeRC numat
---      [st1,st2] <- mapM (takeInformation <=< parseGaussianCheckpoint) [filestate1,filestate2]
---      let ParseInformation maybeXs maybeEs1 _maybeGrad1 _maybeHess1  maybeMasses _maybeLabels1 = st1
---          ParseInformation _maybeXs maybeEs2 _maybeGrad2 _maybeHess2 _maybeMasses2 _maybeLabels2 = st2
---          [coord,[energy1],[energy2],masses] = fmap (fromMaybe (error "something wrong reading fchk files")) [maybeXs,maybeEs1,maybeEs2,maybeMasses]
---          aumasses = fmap (*amu) masses
---      conex <- parseConnections "internas.dat"
---      gs <- mapM readArrayDIM1FIle [fileGrad1,fileGrad2]
---      hs <- mapM readArrayDIM2FIle [fileHess1,fileHess2]
---      let derivatives = zipWith3 EnergyDerivatives [energy1,energy2] gs hs
---      mol <- initialConditions coord aumasses derivatives conex temp     
---      print initialRC 
---      print "initial conditions ready"
--- --      rc <- driverNoseHoover mol auTime auDt temp thermo Quadratic "quadratic" initialRC
---   where readDouble x = read x :: Double
 
-
-driverNoseHoover :: Molecule -> Time -> DT -> Temperature -> Thermo -> Job -> String -> ReactionCoordinate -> IO ReactionCoordinate
-driverNoseHoover mol time dt temp thermo job project rc =
-  if time < 0.0 then return rc
-                else do 
-                    (newMol,newThermo) <- dynamicNoseHoover mol dt temp thermo job project
-                    let newRC = updateReactionCoordinate rc newMol
-                    driverNoseHoover newMol (time-dt) dt temp newThermo job project newRC
- 
-
-updateReactionCoordinate :: ReactionCoordinate -> Molecule -> ReactionCoordinate
-updateReactionCoordinate = undefined
 
 
 

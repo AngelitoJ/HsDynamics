@@ -25,10 +25,12 @@ module Gaussian where
 import Data.Char
 import Data.Function (on)
 import Data.List (foldl',sortBy)
-import Text.ParserCombinators.Parsec
-import Text.Parsec.Numbers
+import Text.Parsec
+import Text.Parsec.ByteString
 
+-- Internal imports
 import CommonTypes 
+import ParsecNumbers
 
 -- ===============> Show Instances <================
 
@@ -74,7 +76,7 @@ readTheoryLevel file = do
        Left msg -> error . show $ msg
        Right xs -> return xs
        
-parseTheoryLevel :: GenParser Char st String
+parseTheoryLevel :: MyParser ()  String
 parseTheoryLevel = do
   manyTill anyChar $ char '#'
   r <- manyTill anyChar $ (try $ string "Charge")
@@ -86,7 +88,7 @@ parseGaussianCheckpoint :: String -> IO (Either ParseError [GauBlock])
 parseGaussianCheckpoint = parseFromFile gaussianChkParser
 
 -- Parse Gaussian Checkpoint format
-gaussianChkParser :: GenParser Char st [GauBlock]
+gaussianChkParser :: MyParser ()  [GauBlock]
 gaussianChkParser = do
     fileheader <- count 2 anyline      -- discard first two lines of header
     datablocks <- many1 goodDataBlock  -- parse at least one datablock
@@ -94,11 +96,11 @@ gaussianChkParser = do
     return datablocks              -- 
 
 -- Parse a text line as a whole into a string
-anyline :: GenParser Char st String
+anyline :: MyParser ()  String
 anyline = manyTill anyChar newline     -- whatever we found till we hit a newline
 
 --sanitize datablocks
-goodDataBlock :: GenParser Char st GauBlock
+goodDataBlock :: MyParser ()  GauBlock
 goodDataBlock = do
     candidate <- datablock
     isGood <- blockcheck candidate   -- check for sane blocks
@@ -107,7 +109,7 @@ goodDataBlock = do
        else fail "GauBlock cardinality is not good"  -- TODO: Just tell us what was the offeding block
 
 -- Try to parse one of the known datablock types or give up
-datablock :: GenParser Char st GauBlock
+datablock :: MyParser ()  GauBlock
 datablock = do
     try singleblock    -- Is it a single block?
     <|> multiblock     -- can it be multi block?
@@ -115,36 +117,36 @@ datablock = do
     <?> "Cachis!"      -- Something gone wrong here we cannot not parse anything at all!
 
    -- Parse while text lines into TGauBlocks   
-whatever :: GenParser Char st GauBlock
+whatever :: MyParser ()  GauBlock
 whatever = do
     iFound <- anyline
     return $ TGauBlock iFound
 
 -- Check block have proper number of elements
-blockcheck :: GauBlock -> GenParser Char st Bool
+blockcheck :: GauBlock -> MyParser ()  Bool
 blockcheck (IGauBlock t n v) = return $ n == length v
 blockcheck (RGauBlock t n v) = return $ n == length v
 blockcheck (TGauBlock t) = return True
 
 
 -- Try to parse single data block that contains a header and one datavalue somewhat spaced
-singleblock :: GenParser Char st GauBlock
+singleblock :: MyParser ()  GauBlock
 singleblock = try $ do
     (blockLabel,valueType) <- simpleheader
     case valueType of
         'I' -> do
                 skipMany1 space
-                valueData <- parseIntegral
+                valueData <- integerNumber
                 newline
                 return $ IGauBlock blockLabel 1 [valueData]
         'R' -> do
                 skipMany1 space
-                valueData <- parseFloat
+                valueData <- realNumber
                 newline
                 return $ RGauBlock blockLabel 1 [valueData]
 
 -- Try to parse a multi block containing a header and two or more values across several lines (up to five or six elements every line)
-multiblock :: GenParser Char st GauBlock
+multiblock :: MyParser ()  GauBlock
 multiblock = try $ do
     (blockLabel,valueType,valueNumber) <- multiheader
     case valueType of
@@ -156,14 +158,14 @@ multiblock = try $ do
                 return $ RGauBlock blockLabel valueNumber values           -- RGauBlocks store real data
 
 -- Parse simple block header consisting of a label, and a type
-simpleheader :: GenParser Char st (String,Char)
+simpleheader :: MyParser ()  (String,Char)
 simpleheader = do
     dlabel <- labelfield
     dtype  <- oneOf "IR"         -- data types are 'I'nteger or 'R'eal
     return $ (dlabel,dtype)
 
 -- Parse a multi block header line consisting of a label, a type, and a cardinality
-multiheader :: GenParser Char st (String,Char,Int)
+multiheader :: MyParser ()  (String,Char,Int)
 multiheader = do
     dlabel <- labelfield
     dtype  <- oneOf "IR"         -- data types are 'I'nteger or 'R'eal
@@ -173,7 +175,7 @@ multiheader = do
     return $ (dlabel,dtype,dcar)
 
 -- Parse the label (always 43 chars)
-labelfield :: GenParser Char st String
+labelfield :: MyParser ()  String
 labelfield = do
     result <- count 43 anyChar
     return $ result
@@ -195,46 +197,46 @@ parseLogGaussian k = parseFromFile combination
         return $ GaussLog eg grad
 
 
-parseEigenData :: GenParser Char st [EigenBLock]
+parseEigenData :: MyParser ()  [EigenBLock]
 parseEigenData = do
     let eigenLabel = "EIGENVALUES AND  EIGENVECTORS OF CI MATRIX"
         configurations = "NO OF BASIS FUNCTIONS ="
     manyTill anyChar (try $  string configurations)
-    cs <- fromInteger `fmap`(spaces >> parseIntegral)
+    cs <- fromInteger `fmap`(spaces >> integerNumber)
     manyTill anyChar (try $  string eigenLabel)
     manyTill (many1 newline >> parseEigenBLock cs) (try $ string " Final one electron symbolic density matrix:")    
     
-parseEigenBLock :: Int -> GenParser Char st EigenBLock
+parseEigenBLock :: Int -> MyParser ()  EigenBLock
 parseEigenBLock n = do
   val <- parseEigenValue
   vec <- parseEigenVector n 
   return $ EigenBLock val vec
       
-parseEigenValue :: GenParser Char st Double
+parseEigenValue :: MyParser ()  Double
 parseEigenValue = do
   spaces 
-  parenthesis $ spaces >> parseIntegral
+  parenthesis $ spaces >> integerNumber
   spaces >> string "EIGENVALUE"
-  spaces >> parseFloat
+  spaces >> realNumber
   
   
-parseEigenVector :: Int -> GenParser Char st [Double]
+parseEigenVector :: Int -> MyParser ()  [Double]
 parseEigenVector n = do 
   pairs <- count n parseConfigVal
   takeLine
   return $ sortPairs pairs  
   
-parseConfigVal ::  GenParser Char st (Integer,Double)
+parseConfigVal ::  MyParser ()  (Integer,Double)
 parseConfigVal = do
   try spaces <|> (newline >> spaces)
-  n <- parenthesis $ spaces >> parseIntegral
-  r <- try parseFloat <|> (space >> parseFloat)
+  n <- parenthesis $ spaces >> integerNumber
+  r <- try realNumber <|> (space >> realNumber)
   return (n,r)
          
   
 -- ======> Parse Gradients <=============
 
-parseLogGrad :: Int -> GenParser Char st  [[Double]]
+parseLogGrad :: Int -> MyParser ()   [[Double]]
 parseLogGrad numat = do
   let otherState = "Gradient of iOther State \n"
       currentState = "Gradient of iVec State. \n"
@@ -244,9 +246,9 @@ parseLogGrad numat = do
   currentGrad <- concat `fmap` count numat parseLineNumber 
   return [otherGrad,currentGrad]
 
-parseLineNumber :: GenParser Char st [Double]  
+parseLineNumber :: MyParser ()  [Double]  
 parseLineNumber = do
-                 xs <- count 3 (spaces >> parseFloat)
+                 xs <- count 3 (spaces >> realNumber)
                  newline
                  return xs
   
@@ -254,23 +256,34 @@ sortPairs :: [(Integer,Double)] -> [Double]
 sortPairs = fmap snd . sortBy (compare `on` fst)
   
 
+parseOscillator :: Int -> MyParser ()  [(Double,Double)] 
+parseOscillator n = do
+    count n parseExcitedStates
     
+parseExcitedStates :: MyParser ()  (Double,Double)
+parseExcitedStates = do
+  manyTill anyChar (try $ string "Excited State")
+  nroot <- (spaces >> intNumber)
+  manyTill anyChar (try $ string "Singlet-A")
+  energy <- (spaces >> realNumber)
+  manyTill anyChar (try $ string "f=")
+  os <- realNumber
+  return (energy,os)
+      
 -- =====================> Utilities <===========================    
-    
-
 parenthesis p = between (char '(') (char ')')   p
 
     
 -- Parse cardinality field as "N=    Integer"
-cardinality :: GenParser Char st Int
+cardinality :: MyParser ()  Int
 cardinality = do
     string "N="
     spaces
-    n <- parseIntegral 
+    n <- integerNumber 
     return $ fromIntegral n -- we need just an Int
 
 -- Parse an multi block consisting of n integer values up to six per line
-ivalues :: Int -> GenParser Char st [Integer]
+ivalues :: Int -> MyParser ()  [Integer]
 ivalues n = 
     if (n `rem` 6 ) == 0 
        then do
@@ -282,20 +295,20 @@ ivalues n =
            return $ concat [concat result1, result2 ] -- we need to flatten the lists
 
 -- Parse a line of integer values up to six
-ivaluesline :: GenParser Char st [Integer]
+ivaluesline :: MyParser ()  [Integer]
 ivaluesline = do
     idata <- manyTill ivalue newline
     return idata
 
 -- A ivalue consists of one integer after one or more blanks
-ivalue :: GenParser Char st Integer
+ivalue :: MyParser ()  Integer
 ivalue = do
     simpleSpace
-    result <- parseIntegral
+    result <- integerNumber
     return result
 
 -- A rvalue datablock consists of n rvalues up to six per line
-rvalues :: Int -> GenParser Char st [Double]
+rvalues :: Int -> MyParser ()  [Double]
 rvalues n = 
     if (n `rem` 5 ) == 0 
        then do
@@ -307,26 +320,26 @@ rvalues n =
            return $ concat [concat result1, result2 ]
 
 -- Parse a line of rvalues up to six
-rvaluesline :: GenParser Char st [Double]
+rvaluesline :: MyParser ()  [Double]
 rvaluesline = do
     rdata <- manyTill rvalue newline
     return rdata
 
 -- A rvalue consists of one integer after one or more blanks
-rvalue :: GenParser Char st Double
+rvalue :: MyParser ()  Double
 rvalue = do
     simpleSpace
-    result <- parseFloat
+    result <- realNumber
     return result
 
 -- Parse oner or more blanks discarding them
-simpleSpace :: GenParser Char st ()
+simpleSpace :: MyParser ()  ()
 simpleSpace = skipMany (satisfy isSpace)
 
 
-skipLines :: Int -> GenParser Char st ()    
+skipLines :: Int -> MyParser ()  ()    
 skipLines n = count n takeLine >> return ()
 
 -- | take whole line
-takeLine :: GenParser Char st String
+takeLine :: MyParser ()  String
 takeLine = manyTill anyChar newline
