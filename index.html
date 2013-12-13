@@ -36,15 +36,25 @@
 
 <p>Current modules feature these MD components:</p>
 
-<pre><code>- Velocity Verlet algorithm to propagate the geometries.
-- Nosé Hoover thermostate chains for a constant temperature bath.
-- Tully-Hammes-Schiffer hopping algorithm (along with correction of Persico-Granucci).
+<pre><code>- PES evalutators:
+    - abinitio pointwise evalution (via external 3d party packages like Molcas, Gaussian etc..).
+    - Fixed Cuadratic interpolation around some point of interest.
+    - Dynamic weighted multiple points interpolation (a.k.a Palmeiro interpolator) to more accurate surface interpolation.
+- Symplectic Integrator:
+    - Velocity Verlet algorithm.
+    - Nosé Hoover thermostate chains for a constant temperature bath.
+- Energy corrections and diverse phenomena:
+    - Tully-Hammes-Schiffer hopping algorithm (along with correction of Persico-Granucci).
 </code></pre>
 
 <p>It also features the possibility to add external forces to the molecule, to simulate constrained conditions that can be found, in example, in a protein binding pocket.</p>
 
 <p>The package exercise multiple haskell facilities, featuring several parsec submodules and making use of Async
 in order to manage external programs.</p>
+
+<pre><code>Thanks: 
+    Raul Palmeiro: Fortran coded multinodal interpolator
+</code></pre>
 
 <p><a href="https://github.com/2013" class="user-mention">@2013</a> Felipe Zapata, Angel Alvarez, Alessio Valentini. The RESMOL group</p>
         </section>
