@@ -65,6 +65,13 @@ parseFileInput parser fileName = do
        Left msg -> fail $ show msg
        Right xs -> return xs
 
+parseFilePrueba :: Show a => MyParser () a -> FilePath ->  IO ()
+parseFilePrueba parser fileName = do
+  r <- parseFromFile parser fileName 
+  case r of
+       Left msg -> fail $ show msg
+       Right xs -> print xs
+       
 parseInput :: MyParser () InitialDynamics
 parseInput = do 
   elecSt          <- parserElectronicState
@@ -158,8 +165,7 @@ parserProject = option [] $ try $ do
   spaces
   try (string "Project") <|> try (string "project")
   parseEqual
-  project <- manyTill anyChar space
-  anyLine
+  project <- try (manyTill anyChar space) <|> manyTill anyChar eof
   return project
                        
 parseKeyword :: MyParser () String
@@ -213,24 +219,27 @@ initializeBaseOnXYZ xs st temp = do
                       & getAtoms .~ labels 
                       & getElecSt.~ (Left st) 
                      
-initializeMolcasTinker :: FilePath -> Singlet -> Temperature -> Int -> IO Molecule  
+initializeMolcasTinker :: FilePath -> Singlet -> Temperature -> Int -> IO (Molecule,[AtomQM])  
 initializeMolcasTinker molcasInput st temp numat = do
   molcasQM   <- parserInputMolcasQM molcasInput $ parserGatewayQM numat
   let atoms  = takeLabelCoordinates <$> molcasQM
-  initializeBaseOnXYZ atoms st temp
+  mol <- initializeBaseOnXYZ atoms st temp
+  return (mol,molcasQM)
                                              
-  where takeLabelCoordinates (AtomQM label xyz) = (label,xyz)  
+  where takeLabelCoordinates (AtomQM label xyz _) = (label,xyz)  
   
 -- |collects the initial required to initialize a dynamic on the fly
 initializeSystemOnTheFly :: FilePath -> Singlet -> Temperature-> IO Molecule
 initializeSystemOnTheFly file st temp = do
-     let keywords = ["Coordinates","Grad","Masses","Charges"]
+     let keywords = ["Coordinates","Masses","Charges"]
      pairs <- takeInfo keywords <=< parseGaussianCheckpoint $ file
      let getData = lookupLabel pairs
-         [coord,grad,masses] = fmap ((\ys -> R.fromListUnboxed (Z:. DL.length ys) ys) . getData) ["Coordinates","Grad","Masses"]
-         labels = fmap (charge2Label .floor) $ getData "Charges"
-         aumasses = computeUnboxedS $ R.map (*amu) masses
-         forces = computeUnboxedS $ R.map (negate) grad
+         [coord,masses] = fmap ((\ys -> R.fromListUnboxed (Z:. DL.length ys) ys) . getData) ["Coordinates","Masses"]
+         labels         = fmap (charge2Label .floor) $ getData "Charges"
+         numat          = DL.length labels
+         dim            = 3*numat
+         aumasses       = computeUnboxedS $ R.map (*amu) masses
+         forces         = R.fromUnboxed (Z:.dim) $ VU.replicate dim 0
      velocities <- genMaxwellBoltzmann aumasses temp
      return $ defaultMol & getCoord .~ coord 
                          & getVel   .~ velocities 
@@ -258,13 +267,6 @@ initialConditions !cartCoord !masses !dervEs !conex !t = do
                          & getDervEn.~ dervEs
                          & getFCStruc.~fc
 
-genMaxwellBoltzmann :: Array U DIM1 Double -> Temperature -> IO (Array U DIM1 Double)
-genMaxwellBoltzmann !ms !t = do
-  let stds = fmap (\mi -> sqrt $ (t*kb/mi)) $ R.toList ms
-  xs <- mapM (\std -> (take 3) `liftM` (normalsIO' (0,std)))  stds  
-  let vs = concat xs
-  return $ R.fromListUnboxed (Z:. length vs) vs
-
 parseConnections :: FilePath -> IO Connections
 parseConnections file = do
   r <- parseFromFile parseInternals file
@@ -272,6 +274,23 @@ parseConnections file = do
        Left msg -> error $ show msg
        Right conex -> return conex
   
+-- ====================> Initial Velocities <================  
+genMaxwellBoltzmann :: Array U DIM1 Double -> Temperature -> IO (Array U DIM1 Double)
+genMaxwellBoltzmann !ms !t = do
+  let stds = fmap (\mi -> sqrt $ (t*kb/mi)) $ R.toList ms
+  xs <- mapM (\std -> (take 3) `liftM` (normalsIO' (0,std)))  stds  
+  let vs = concat xs
+  return $ R.fromListUnboxed (Z:. length vs) vs
+
+readInitialVel :: FilePath -> IO (Array U DIM1 Double)
+readInitialVel xyz = do 
+  r <- parseFromFile parseMoleculeXYZ xyz
+  case r of
+       Left msg -> error $  show msg
+       Right xs -> do 
+                   let dim = 3*(length xs)
+                   return $ R.fromListUnboxed (Z:.dim) $ concatMap snd xs 
+       
 -- ===================> <==================
 -- | String to Nuclear Charge
 atom2Mass :: M.Map String Double 

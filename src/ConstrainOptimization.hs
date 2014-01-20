@@ -10,11 +10,11 @@ import Numeric.LinearAlgebra as NLA((|>),(<>),(<.>),(@>), Matrix,Vector,add,buil
                                    rows,scale,sub,toList,trans)
 
 -- Internal Modules                                   
-import CommonTypes
-import Dynamics
 import APIparser
+import CommonTypes
 import Constants (auN)
-                                   
+import Dynamics
+import Logger
 -- ==============> <================
 type ExternalGrad = Array U DIM1 Double
 type Hessian = Matrix Double
@@ -45,8 +45,11 @@ mainLoop job project mol0 hess gext step = do
        norm = sqrt . R.sumAllS . computeUnboxedS $ R.zipWith (*) gradT gradT
    putStrLn $ "Step number: " DL.++ (show step)
    putStrLn $ "Norm total Gradient au: " DL.++ (show norm)
-   printMol newmol $ "total Gradient (au): " DL.++ (show norm)
-   if converge norm  then return newmol
+   logger <- initLogger "geometry.out"
+   printMol newmol ("total Gradient (au): " DL.++ (show norm)) logger
+   if converge norm  then do
+                          logStop logger
+                          return newmol
                      else mainLoop job project newmol newHess gext (succ step)
   
 totalGrad :: Molecule -> ExternalGrad -> Array U DIM1 Double

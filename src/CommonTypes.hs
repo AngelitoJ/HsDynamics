@@ -30,19 +30,18 @@ instance Show TheoryLevel where
     show HF                                      = "HF"
     show Unspecified                             = "Unspecified"
  
-data MolcasInput a =  Command  a |  Gateway a | Seward a | RasSCF Int a a | MCLR a | Alaska a deriving (Functor)
+data MolcasInput a =  Command  a | ESPF a | Gateway a | Seward a | RasSCF Int a a | MCLR a | Slapaf a | Alaska a deriving (Functor)
 
 instance Show (MolcasInput String) where 
   show (Command x)    = ">> "        ++ x ++ "\n"
-  show (Gateway x)    = "&Gateway\n" ++ x
-  show (Seward  x)    = "&Seward\n"  ++ x
+  show (Gateway x)    = "\n\n" ++ "&Gateway\n" ++ x 
+  show (Seward  x)    = "&Seward\n"  ++ x 
+  show (ESPF    x)    = "&ESPF\n"      ++ x
   show (RasSCF n x y) = "&Rasscf\n"  ++ x ++ "rlxroot=" ++ show n ++ y
-  show (MCLR    x)    = "&Mclr\n"   ++ x
-  show (Alaska  x)    = "&Alaska\n"  ++ x
- 
-data Job = Gaussian (TheoryLevel,Basis) | Interpolation | Molcas [MolcasInput String] | MolcasTinker [(Label,Int)] Command 
-          | Palmeiro Connections [FilePath]|Quadratic | HaskellAbInitio deriving Show 
-
+  show (MCLR    x)    = "&Mclr\n"    ++ x
+  show (Slapaf  x)    = "&Slapaf\n"  ++ x
+  show (Alaska  x)    = "&Alaska\n"  ++ x 
+  
 -- Internal Coordinates types 
 data  InternalCoord = Bond !Int !Int | Angle !Int !Int !Int | Dihedral !Int !Int ! Int !Int deriving Show                          
 type Connections = V.Vector InternalCoord
@@ -85,6 +84,24 @@ data InitialDynamics = InitialDynamics {
                                        }    deriving Show
 
 makeLenses ''InitialDynamics                                        
+
+
+-- =================> Quantum Mechanics and Molecular Mechanics Atoms <=====
+data AtomMM = AtomMM {_numberMM :: Int, _labelMM :: Label , _xyzMM :: XYZ, _parametersMM :: Parameters} deriving Show
+
+makeLenses ''AtomMM 
+
+data Type    = MM | QM Basis deriving Show
+  
+data AtomQM  = AtomQM Label XYZ Type  deriving Show
+
+data AtomXYZ = Atom Label XYZ VelocityXYZ deriving Show
+ 
+
+-- Jobs types
+data Job = Gaussian (TheoryLevel,Basis) | Interpolation | Molcas [MolcasInput String] | MolcasTinker [MolcasInput String] [(Label,Int)] [AtomQM]
+          | Palmeiro Connections [FilePath]|Quadratic | HaskellAbInitio deriving Show 
+          
                                        
 -- ==================> Internal Coordinates data types <============
 data EnergyDerivatives = EnergyDerivatives !Energy !Grad !Hess deriving Show
@@ -150,15 +167,6 @@ data MolState = MolState
     }
 
          
--- =================> Quantum Mechanics and Molecular Mechanics Atoms <=====
-data AtomMM = AtomMM {_numberMM :: Int, _labelMM :: Label , _xyzMM :: XYZ, _parametersMM :: Parameters} deriving Show
-
-makeLenses ''AtomMM 
-
-data AtomQM = AtomQM Label XYZ deriving Show
-
-data AtomXYZ = Atom Label XYZ VelocityXYZ deriving Show
-
 
 -- =================> Types for Dynamics <===============
 

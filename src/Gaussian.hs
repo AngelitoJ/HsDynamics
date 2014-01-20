@@ -243,8 +243,8 @@ parseLogGrad numat = do
   manyTill anyChar (try $ string otherState) 
   otherGrad <- concat `fmap` count numat parseLineNumber 
   manyTill anyChar (try $ string currentState) 
-  currentGrad <- concat `fmap` count numat parseLineNumber 
-  return [otherGrad,currentGrad]
+  iVecGrad  <- concat `fmap` count numat parseLineNumber 
+  return [otherGrad,iVecGrad]
 
 parseLineNumber :: MyParser ()  [Double]  
 parseLineNumber = do
