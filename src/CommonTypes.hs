@@ -100,7 +100,7 @@ data AtomXYZ = Atom Label XYZ VelocityXYZ deriving Show
 
 -- Jobs types
 data Job = Gaussian (TheoryLevel,Basis) | Interpolation | Molcas [MolcasInput String] | MolcasTinker [MolcasInput String] [(Label,Int)] [AtomQM]
-          | Palmeiro Connections [FilePath]|Quadratic | HaskellAbInitio deriving Show 
+           |GroundState (TheoryLevel,Basis)  | Palmeiro Connections [FilePath]|Quadratic | HaskellAbInitio deriving Show 
           
                                        
 -- ==================> Internal Coordinates data types <============
@@ -120,7 +120,6 @@ data GauBlock =
       IGauBlock Label Int [Integer]     -- A GauBlock containing one or more integer values
     | RGauBlock Label Int [Double]      -- A GauBlock containing one or more real values
     | TGauBlock String                  -- A GauBlock containing just unformatted text
-
     
 data GaussLog = GaussLog [EigenBLock] [[Double]] deriving Show
 

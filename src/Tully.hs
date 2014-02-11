@@ -87,7 +87,9 @@ tullyHS  dt aMatrix step mol = do
                                      newCoeff = correctedp : (tail coeffs)
                                      currentEnergy = let xs = mol^.getEnergy . to head   in xs !! intSt
                                      newVel = scaleVelocity eTot currentEnergy mol
-                                     newMol = set getCoeffCI newCoeff $ set getElecSt (Left newSt) $ set getVel newVel  mol  
+                                     newMol = mol & getCoeffCI .~ newCoeff 
+                                                  & getElecSt  .~ (Left newSt) 
+                                                  & getVel     .~ newVel
                                  appendFile "result.out" $ "Hop to Root: " ++ (show newSt) ++ "\n" 
                                  return (newMol,newAmatrix)
                                      

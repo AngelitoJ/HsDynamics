@@ -16,6 +16,7 @@ module Dynamics (
                ,moveVel
                ,noseHoover1
                ,noseHoover2
+               ,printTotalEnergy
                ,velocityVerletForces
                )where
 
@@ -29,11 +30,13 @@ import Data.Array.Repa as R
 import Data.Array.Repa.Unsafe as R
 import Data.Either (either)
 import Data.Maybe (fromMaybe)
+import Text.Printf (printf)
 
 -- internal modules
 import CommonTypes
 import APIparser
 import Constants as CTES 
+import Logger
                
 
 -- ==========================> <==================
@@ -138,7 +141,7 @@ noseHoover2  mol dt t thermo = bath mol2 dt t thermo
   where mol2 = moveVel dt mol
 
 
-dynamicNoseHoover :: Molecule -> DT -> Temperature -> Thermo -> Job -> String -> IO (Molecule,Thermo)  
+dynamicNoseHoover :: Molecule -> DT -> Temperature -> Thermo -> Job -> Project -> IO (Molecule,Thermo)  
 dynamicNoseHoover !mol !dt !t thermo job project = do  
        let (step1,thermo1) = noseHoover1 mol dt t thermo      
        step2 <- interactWith job project step1
@@ -153,11 +156,11 @@ dynamicExternalForces !mol !dt !t thermo job project anchor modForceExt = do
  
 initializeThermo :: Int -> Temperature -> Thermo
 initializeThermo numat t  = Thermo q1 q2 vx1 vx2
-  where q1 = 3.0 * (fromIntegral numat)* t * kb / (freq^2)
+  where q1 = 3.0 * (fromIntegral numat)* t * kb / freq^2
         q2 = t * kb / freq^2
         vx1 = 0.0
         vx2 = 0.0
-        freq = recip (2.2e1/au_time)
+        freq = recip (2.2e1/au_time) -- Nosé coupling parameter. Default is 1500.0 cm-1.
 
 
 -- ================> EXTERNAL FORCES <======================
@@ -188,7 +191,10 @@ calcTotalEnergy mol = kinetic + potential
         currentEnergies = mol ^. getEnergy . to head
         potential = currentEnergies !! (calcElectSt mol)                         
                          
-                 
+printTotalEnergy :: Molecule -> Logger -> IO ()
+printTotalEnergy mol logger = do
+  let eTotal = calcTotalEnergy mol
+  logMessage logger $ printf "%12.5f\n" eTotal                
 
 calcEk :: Array U DIM1 Double -> Array U DIM1 Double -> Double
 calcEk vs ms = R.sumAllS . computeUnboxedS . fromFunction (extent vs) $

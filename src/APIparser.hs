@@ -3,7 +3,7 @@
 module APIparser where
 
 import Control.Applicative
-import Control.Arrow ((&&&))
+import Control.Arrow ((&&&),(***))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
 import Control.Lens
@@ -106,6 +106,14 @@ interactWith job project mol =
                  launchJob $ "g09 " ++ input
                  print "Updating Roots info"
                  updateMultiStates out mol
+                 
+     GroundState tupleTheory -> do
+                let [input,out,chk,fchk] = DL.zipWith (++) (repeat project) [".com",".log",".chk",".fchk"]
+                writeGaussJob tupleTheory project mol 
+                launchJob $ "g09 " ++ input
+                launchJob $ "formchk " ++ chk
+                getGradEnerFCHK fchk mol                 
+
                             
      Palmeiro conex dirs ->  launchPalmeiro conex dirs mol
        
@@ -383,13 +391,16 @@ tuples2List xs = fmap go xs
 
 -- ===========> Gaussian Interface <=========
 -- |take info from the formated check point
-getInfoFCHK :: [Label] -> FilePath -> Molecule -> IO Molecule      
-getInfoFCHK keywords file mol = do
+getGradEnerFCHK :: FilePath -> Molecule -> IO Molecule      
+getGradEnerFCHK file mol = do
+  let keywords = ["Grad","Energy"]
   pairs <- takeInfo keywords <=< parseGaussianCheckpoint $ file
-  let grad = (\ys -> R.fromListUnboxed (Z:. DL.length ys) ys) $ lookupLabel pairs "Grad"
+  let grad   = (\ys -> R.fromListUnboxed (Z:. DL.length ys) ys) $ lookupLabel pairs "Grad"
+      energy = lookupLabel pairs "Energy"
       forces = computeUnboxedS $ R.map (negate) grad
-  return $ set getForce forces mol
-
+  return $ mol & getForce  .~ forces 
+               & getEnergy .~ [energy]
+    
 -- | Monadic Lookup function base on keywords  
 takeInfo :: [Label] -> Either ParseError [GauBlock] -> IO [(Label,[Double])]
 takeInfo labels eitherInfo =
@@ -469,6 +480,13 @@ gaussCoeff = undefined
                              
 -- ================> Parser Internal Coordinates <===============
 
+parserFileInternas :: FilePath -> IO Connections
+parserFileInternas name = do
+  r <- parseFromFile parseInternals name
+  case r of
+       Left err  -> error $ show err
+       Right xs  -> return xs
+
 parseInternals :: MyParser st (Connections)
 parseInternals = do
   bonds     <- parseSection 2
@@ -500,14 +518,32 @@ parseQ !n = do
      
 -- =======================> ParseMolecules in XYZ format <=======================
 
-parseMoleculeXYZ :: MyParser st [(Label,[Double])]  
-parseMoleculeXYZ = do
+parserGeomVel :: FilePath -> Molecule -> IO [Molecule]
+parserGeomVel xyz mol = do
+  r <- parseFromFile (many1 $ parseMol mol parseAtomsVel ) xyz
+  case r of
+       Left msg -> error $  show msg
+       Right xs -> return xs
+
+
+parseMoleculeXYZ :: MyParser st (Label,[Double]) -> MyParser st [(Label,[Double])]  
+parseMoleculeXYZ parser = do
     numat <- intNumber 
     count 2 anyLine
-    geometry <- count numat parseAtoms
+    geometry <- count numat parser
     return $ geometry 
-    
 
+parseMol :: Molecule -> MyParser st (Label,[Double])  -> MyParser st Molecule
+parseMol mol parser = do
+    numat <- intNumber 
+    anyLine
+    es <- count 2 (spaces >> realNumber)
+    anyLine 
+    geometry <- count numat parser
+    let new = updatePosMom geometry mol 
+    return $ new & getEnergy .~ [es] 
+    
+    
 parseAtoms :: MyParser st (Label,[Double])   
 parseAtoms = do 
             spaces 
@@ -516,7 +552,13 @@ parseAtoms = do
             anyLine
             return $ (label,xs) 
            
-     
+parseAtomsVel :: MyParser st (Label,[Double])   
+parseAtomsVel = do 
+            spaces 
+            label <- many1 alphaNum
+            xs    <- count 6 (spaces >> realNumber)
+            anyLine
+            return $ (label,xs)      
             
 -- =========> Utilities <=================
 calcElectSt :: Molecule -> Int
@@ -538,6 +580,15 @@ parseUnboxed = VU.unfoldr step
                  Nothing       -> Nothing
                  Just (!k, !t) -> Just (k, C.tail t)         
         
+updatePosMom :: [(Label,[Double])] -> Molecule -> Molecule 
+updatePosMom as mol = mol & getCoord .~ repaCoord 
+                          & getVel   .~ velocities  
+                          
+  where repaCoord   = R.fromListUnboxed (Z :. dim) xs                         
+        velocities = R.fromListUnboxed (Z :. dim) vs 
+        dim        = 3 * length as
+        (xs,vs)    = concat *** concat $ unzip . fmap (splitAt 3 . snd ) $ as
+         
 -- =============================> <===============================
 printGnuplot :: MatrixCmplx -> Molecule -> IO ()
 printGnuplot matrix mol = do
@@ -593,8 +644,8 @@ writeGaussJob :: (TheoryLevel,Basis)  -> String -> Molecule -> IO ()
 writeGaussJob (theory,basis) project mol =  do
 --   name <- getLoginName   
   let l1 = addNewLines 1 $ "%chk=" ++ project 
-      l2 = addNewLines 1 "%mem=2000Mb"
-      l3 = addNewLines 1 "%nproc=2"
+      l2 = addNewLines 1 "%mem=4000Mb"
+      l3 = addNewLines 1 "%nproc=4"
 --       l4 = addNewLines 1 $ "%scr=/scratch/" ++ name ++ "/"
 --       l5 = addNewLines 1 $ "%rwf=/scratch/" ++ name ++ "/"
       l6 = addNewLines 1 $ "#p " ++ (show theory) ++ basis ++ "  force  iop(1/33=1) nosymm"
@@ -602,7 +653,8 @@ writeGaussJob (theory,basis) project mol =  do
       l8 = addNewLines 2 "save the old Farts, use Fortran."
       l9 = addNewLines 1 "0 1"
       atoms = addNewLines 1 $ showCoord mol
-      weights = addNewLines 5 $ " 0.5       0.5"
+      st    = calcElectSt mol 
+      weights = addNewLines 5 $  if st == 0 then "" else " 0.5       0.5"
       result = foldl1 (++) [l1,l2,l3,l6,l7,l8,l9,atoms,weights]
   writeFile (project ++ ".com") result 
                            

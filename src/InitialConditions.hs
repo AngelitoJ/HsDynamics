@@ -117,8 +117,7 @@ parserTheory = option (Unspecified,"Unspecified") $ do
   try (string "Theory") <|> try (string "theory")
   spaces >> char '=' >> spaces
   theory  <- parseLevel
-  basis   <- manyTill anyChar space
-  anyLine
+  basis   <- manyTill anyChar newline
   return (theory,basis)
   
   where parseLevel = try parserCasMolcas <|> try parserHF <?> "theory level"
@@ -183,14 +182,14 @@ parseEqual = spaces *> char '=' *> spaces
 -- function to initialize on the fly molecular dynamics using Molcas  
 initializeMolcasOntheFly :: FilePath -> Singlet -> Temperature -> IO Molecule
 initializeMolcasOntheFly xyz st temp = do
-  r <- parseFromFile parseMoleculeXYZ xyz
+  r <- parseFromFile (parseMoleculeXYZ parseAtoms) xyz
   case r of
        Left msg -> error $  show msg
        Right xs -> initializeBaseOnXYZ xs st temp
    
 initializeMolcasZeroVel ::  FilePath -> Singlet -> Temperature -> IO Molecule
 initializeMolcasZeroVel xyz st temp = do
-  r <- parseFromFile parseMoleculeXYZ xyz
+  r <- parseFromFile (parseMoleculeXYZ parseAtoms) xyz
   case r of
        Left msg -> error $  show msg
        Right xs -> do 
@@ -284,7 +283,7 @@ genMaxwellBoltzmann !ms !t = do
 
 readInitialVel :: FilePath -> IO (Array U DIM1 Double)
 readInitialVel xyz = do 
-  r <- parseFromFile parseMoleculeXYZ xyz
+  r <- parseFromFile (parseMoleculeXYZ parseAtoms) xyz
   case r of
        Left msg -> error $  show msg
        Right xs -> do 
