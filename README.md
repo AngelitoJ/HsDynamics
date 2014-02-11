@@ -21,3 +21,8 @@ in order to manage external programs.
 
 
 @2013 Felipe Zapata, Angel Alvarez, Alessio Valentini. The RESMOL group
+<a href="http://www.cs.uu.nl/~daan/parsec.html">
+ <img src="http://www.cs.uu.nl/~daan/images/parsec.gif"
+      alt="Parsec logo" hspace=20 border=0
+      style="float: right; border: none; padding-left: 4pt">
+</a>
