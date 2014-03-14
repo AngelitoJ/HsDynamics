@@ -187,16 +187,14 @@ initializeMolcasOntheFly xyz st temp = do
        Left msg -> error $  show msg
        Right xs -> initializeBaseOnXYZ xs st temp
    
-initializeMolcasZeroVel ::  FilePath -> Singlet -> Temperature -> IO Molecule
-initializeMolcasZeroVel xyz st temp = do
+initializeMolcasZeroVel ::  FilePath  -> IO Vec
+initializeMolcasZeroVel xyz  = do
   r <- parseFromFile (parseMoleculeXYZ parseAtoms) xyz
   case r of
        Left msg -> error $  show msg
-       Right xs -> do 
-                  mol <- initializeBaseOnXYZ xs st temp
-                  let dim = 3 * (mol ^. getAtoms . to length)
-                      zeroVel = R.fromUnboxed (Z:. dim) $ VU.replicate dim 0
-                  return $ set getVel zeroVel mol    
+       Right xs -> do
+                  let dim = 3 * (length xs)
+                  return $ R.fromUnboxed (Z:. dim) $ VU.replicate dim 0
                        
  
 initializeBaseOnXYZ :: [(Label,[Double])] -> Singlet -> Temperature -> IO Molecule

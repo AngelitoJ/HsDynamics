@@ -512,27 +512,17 @@ sectionsWhatever name = do
 -- Try to parse Molecular gradients from alaska Molcas modules
 sectionMolecularGradients :: SectionParser
 sectionMolecularGradients = try $ do
-    string " **************************************************"
-    newline
-    string " *                                                *"
-    newline
-    string " *              Molecular gradients               *"
-    newline
-    string " *                                                *"
-    newline
-    string " **************************************************"
-    newline
-    blankLine
-    string "                Irreducible representation:"
-    spaces
+    count 2 commentsLine 
+    comments >> string "Molecular gradients" >> commentsLine
+    count 2 commentsLine >> blankLine
+    spaces >> string "Irreducible representation:" >> spaces
     representation <- oneOfStrings ["a","s1"]
     spaces
     elements       <- many1 molecularGradient
     let n = (`div`3) $ length elements
-    espf           <- option [] $ try $ parserGradESPF n
+    espf           <- option [] $ parserGradESPF n
     return $ AlaskaMolecularGradients representation elements espf
-
-
+        
 -- Try parse molecular gradients items from alaska
 -- "                C1       x                 0.6259617E-01"
 molecularGradient:: MyParser MolState (String,Char,Double)
@@ -547,14 +537,18 @@ molecularGradient = try $ do
     return $ (atom,coord,value)
     
 parserGradESPF :: Int -> MyParser MolState [[Double]]
-parserGradESPF n = do
-    manyTill anyChar (try $ string "After ESPF")  
-    count 2 (anyLine)
-    count n parserLineXYZ
+parserGradESPF n =  do
+   manyTill anyChar $ try $ string "Molecular gradients, after ESPF"
+   commentsLine
+   count 2 commentsLine >> blankLine
+   spaces >> string "Irreducible representation:" >> spaces
+   oneOfStrings ["a","s1"] >> anyLine
+   count 3 anyLine
+   count n parserLineXYZ
    
 parserLineXYZ :: MyParser MolState [Double]
 parserLineXYZ = do 
-             spaces >> intNumber 
+             spaces >> many1 alphaNum
              (count 3 $ spaces >> realNumber)
 
 -- Try parse Ci root data from rasscf Molcas module

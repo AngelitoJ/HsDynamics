@@ -93,11 +93,11 @@ moveVel dt mol = set getVel newVel mol
 
 -- | Velocity-Verlet Algorithm 
 
-velocityVerletForces ::  Molecule -> DT -> Job -> String -> Anchor -> Double -> IO Molecule  
-velocityVerletForces !mol !dt job project anchor modForceExt = do  
-  let  step1 = (\x y -> moveVel y . moveCoord y $ x) mol dt      
-  step2 <- interactWith job project step1
-  let newMol = appliedForce anchor modForceExt step2
+velocityVerletForces ::  Molecule -> DT -> Job -> String -> Anchor -> Double -> Int -> IO Molecule  
+velocityVerletForces !mol !dt job project anchor modForceExt step = do  
+  let  mol1 = (\x y -> moveVel y . moveCoord y $ x) mol dt      
+  mol2 <- interactWith job project step mol1
+  let newMol = appliedForce anchor modForceExt mol2
   return $ moveVel dt newMol
           
 -- =================> NOSÉ-HOOVER <==================
@@ -141,17 +141,17 @@ noseHoover2  mol dt t thermo = bath mol2 dt t thermo
   where mol2 = moveVel dt mol
 
 
-dynamicNoseHoover :: Molecule -> DT -> Temperature -> Thermo -> Job -> Project -> IO (Molecule,Thermo)  
-dynamicNoseHoover !mol !dt !t thermo job project = do  
-       let (step1,thermo1) = noseHoover1 mol dt t thermo      
-       step2 <- interactWith job project step1
-       return $ noseHoover2 step2 dt t thermo1
+dynamicNoseHoover :: Molecule -> DT -> Temperature -> Thermo -> Job -> Project -> Int -> IO (Molecule,Thermo)  
+dynamicNoseHoover !mol !dt !t thermo job project step = do  
+       let (mol1,thermo1) = noseHoover1 mol dt t thermo      
+       mol2 <- interactWith job project step mol1
+       return $ noseHoover2 mol2 dt t thermo1
  
-dynamicExternalForces ::  Molecule -> DT -> Temperature -> Thermo -> Job -> String -> Anchor -> Double -> IO (Molecule,Thermo)  
-dynamicExternalForces !mol !dt !t thermo job project anchor modForceExt = do  
-       let (step1,thermo1) = noseHoover1 mol dt t thermo      
-       step2 <- interactWith job project step1
-       let newMol = appliedForce anchor modForceExt step2
+dynamicExternalForces ::  Molecule -> DT -> Temperature -> Thermo -> Job -> String -> Anchor -> Double -> Int -> IO (Molecule,Thermo)  
+dynamicExternalForces !mol !dt !t thermo job project anchor modForceExt step = do  
+       let (mol1,thermo1) = noseHoover1 mol dt t thermo      
+       mol2 <- interactWith job project step mol1
+       let newMol = appliedForce anchor modForceExt mol2
        return $ noseHoover2 newMol dt t thermo1
  
 initializeThermo :: Int -> Temperature -> Thermo

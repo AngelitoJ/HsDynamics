@@ -6,6 +6,7 @@ import Control.Applicative
 import Control.Arrow ((&&&),(***))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
+import Control.Exception (SomeException,catch)
 import Control.Lens
 import Control.Monad 
 import Data.Array.Repa as R hiding ((++))
@@ -26,8 +27,9 @@ import Text.Parsec
 import Text.Parsec.ByteString (parseFromFile)
 import Text.Printf (printf)
 
-
+import Prelude hiding (catch)
 -- Internal modules
+import ClusterAPI
 import CommonTypes
 import Constants
 import Gaussian 
@@ -37,7 +39,6 @@ import Molcas
 import ParsecNumbers
 import ParsecText
 import QuadraticInterpolation
-import TinkerQMMM
 -- =======================> Data, Types and Instances <==========================
 
 newtype ParseInfo a = ParseInfo {
@@ -76,69 +77,39 @@ naturalTransf (ParseInfo xs) = catMaybes xs
 
 -- =================> Call External Programs <==================
 
-interactWith :: Job -> String -> Molecule -> IO Molecule
-interactWith job project mol = 
+interactWith :: Job -> String -> Int -> Molecule -> IO Molecule
+interactWith job project step mol = 
   case job of 
-     Molcas inputData -> do
-                 let io1 = writeMolcasXYZ (project ++ ".xyz") mol
-                     io2 = writeFile (project ++ ".input") $ concatMap show inputData
-                 concurrently io1 io2 
-                 launchMolcasLocal project
-                 parseMolcas project ["Grad","Roots"] mol
-                 
-     MolcasTinker inputData atomsQM molcasQM ->  do 
-                 print "Update QM atoms"
-                 reWriteXYZtinker mol atomsQM project
-                 print "Launching tinker"
-                 launchTinker project
+     Molcas inputData -> do 
+                       let io1 = writeMolcasXYZ (project ++ ".xyz") mol
+                           io2 = writeFile (project ++ ".input") $ concatMap show inputData
+                       concurrently io1 io2 
+                       launchMolcas project job
+                       parseMolcas project ["Grad","Roots"] mol                                 
+                                  
+     MolcasTinker inputData molcasQM ->  do 
                  print "rewrite Molcas input"
                  modifyMolcasInput inputData molcasQM project mol
+                 print "save tinker xyz "
+                 saveTinkerXYZ project step
                  print "launch Molcas"
-                 launchMolcas project
+                 launchMolcas project job
                  print "Parsing Molcas output"
-                 parseMolcas project ["GradESPF"] mol
-                                                                      
+                 parseMolcas project ["GradESPF","Roots"] mol
+                 
                  
      Gaussian tupleTheory -> do 
-                 let input  = project ++ ".com"
-                     out    = project ++ ".log"        
+                 let [input,out,chk,fchk] = DL.zipWith (++) (repeat project) [".com",".log",".chk",".fchk"]
                  writeGaussJob tupleTheory project mol 
                  launchJob $ "g09 " ++ input
-                 print "Updating Roots info"
-                 updateMultiStates out mol
-                 
-     GroundState tupleTheory -> do
-                let [input,out,chk,fchk] = DL.zipWith (++) (repeat project) [".com",".log",".chk",".fchk"]
-                writeGaussJob tupleTheory project mol 
-                launchJob $ "g09 " ++ input
-                launchJob $ "formchk " ++ chk
-                getGradEnerFCHK fchk mol                 
-
+                 launchJob $ "formchk " ++ chk
+                 updateMultiStates out fchk mol               
                             
      Palmeiro conex dirs ->  launchPalmeiro conex dirs mol
-       
-                             
+                                  
      Quadratic -> return $ calcgradQuadratic mol
-
--- Command to summit jobs in the Resmol cluster     
-launchCluster :: Command -> Args -> IO ()
-launchCluster cmd name = do
-  [pid] <- lines `fmap` readProcess cmd [name] ""
-  simpleLoop pid 10 not    -- has the calculation started?
-  simpleLoop pid 20 id -- has the calculation finished?
-  
-  
---Command to summit jobs in the nodes of a cluster 
--- launchNode :: Command -> Args -> IO ()
--- launchNode cmd name = do
---  
--- | check the cluster queue each t seconds
-simpleLoop :: String  -> Int -> (Bool -> Bool) -> IO ()
-simpleLoop pid t fun = do
-  jobsId <- (concatMap words . lines) <$>  readProcess "qstat" ["-r"] ""
-  if (fun $ DL.elem pid jobsId)
-        then threadDelay (10^6*t) >> simpleLoop pid t fun -- Haskell use miliseconds
-        else return ()
+     
+     
 
 -- | local jobs  
 launchJob :: String -> IO ()
@@ -172,26 +143,23 @@ updateCoeffEnergies energies coeff mol =
 updateNewJobInput :: Job -> Molecule -> Job
 updateNewJobInput job mol = case job of
                                  Molcas   theory -> updateMolcasInput theory rlxroot
+                                 Gaussian tupla  -> updateGaussInput tupla rlxroot
                                  otherwise       -> job               
                                                               
   where rlxroot = succ $ calcElectSt mol                                                              
+
+updateGaussInput :: (TheoryLevel,Basis) -> Int -> Job
+updateGaussInput (theory,basis) newrlx = Gaussian (fun,basis)
+  where fun = case theory of
+                   CASSCF activeSpace rlxroot s -> CASSCF activeSpace newrlx s 
+                   otherwise                    -> theory 
 
 updateMolcasInput ::  [MolcasInput String] -> Int -> Job
 updateMolcasInput xs rlxroot = Molcas $ fmap modifyInputRas xs
  where modifyInputRas x = case x of
                                (RasSCF _ h t) -> RasSCF rlxroot h t
                                otherwise      -> x
-                
--- =======================> Tinker <===========                                                
-launchTinker :: String -> IO ()
-launchTinker project = do
-   let root   ="/home/marco/7.8.dev/tinker-5.1.09/source/dynaqmmm.x  "
-       name   = project ++ ".xyz"                    -- first argument : .xyz file
-       suffix = "  10  0.1 0.01 298 0.734 0.723 > /dev/null 2>&1"  -- argument : -> step (1) -> dt (default 1) -> dump (default 0.1) -> temperature (298 K)
-                                                                   -- -> scaling factor first HLA  -> scaling factor second HLA
-       job = root ++ name ++ suffix
-   launchJob job
-        
+                        
         
 -- ======================> Palmeiro <==============
 launchPalmeiro :: Connections -> [FilePath] -> Molecule -> IO Molecule
@@ -251,9 +219,16 @@ getSuffixFile path suff = do
   
 -- =======================> Molcas <============
 
-launchMolcas :: Project ->  IO ()
-launchMolcas project = launchCluster "Molcas" $ project ++ ".input"
-
+-- How to launch molcas Locally or in a cluster
+launchMolcas :: Project -> Job ->  IO ()
+launchMolcas project job =do
+  r <- system "qstat > /dev/null" -- Am I in a cluster ? (really ugly hack!!!)
+  case r of
+       ExitFailure _ -> launchMolcasLocal project -- not I am not
+       ExitSuccess   -> case job of  -- I am in a cluster!!
+                             MolcasTinker _arg1 _arg2 -> writeShellPBS project >> launchCluster "qsub" (project ++ ".sh")
+                             Molcas  _arg1            -> launchCluster "Molcas" $ project ++ ".input" 
+       
 launchMolcasLocal :: Project ->  IO ()
 launchMolcasLocal project = do
    let input = project ++ ".input"
@@ -261,7 +236,23 @@ launchMolcasLocal project = do
        err   = project ++ ".err"
    launchJob $ "molcas  " ++ input ++ ">  " ++ out ++ " 2>  " ++ err 
 
-
+-- If there is an initial output of Molcas do not repeat it, simply parse it   
+firsStepMolcas :: Job -> String -> Int -> Molecule -> IO Molecule
+firsStepMolcas job project step mol = catch action1 ((\_ -> action2) :: SomeException -> IO Molecule)
+  
+  where action1  = case job of
+                        Molcas _         -> parseMolcas project ["Grad","Roots"] mol
+                        MolcasTinker _ _ -> parseMolcas project ["GradESPF","Roots"] mol
+        action2 = interactWith job project step mol 
+        
+saveTinkerXYZ :: Project -> Int -> IO ()
+saveTinkerXYZ project step = copyFile from to
+  where n    = show step
+        from = project ++ ".xyz"
+        out  = project ++ "_" ++ n ++ ".xyz"
+        to   = "TinkerGeometries/" ++ out 
+        
+-- Molcas/tinker interface requires to rewrite the input in every step of the dynamics        
 modifyMolcasInput :: [MolcasInput String] -> [AtomQM] -> Project -> Molecule -> IO ()
 modifyMolcasInput inputData molcasQM project mol = do
        let newInput = fmap fun inputData
@@ -276,7 +267,8 @@ writeGateway atoms mol = Gateway $ concat $ DL.zipWith3 fun xs atoms [1..]
 
   where xs        = fmap printxyz $ chunksOf 3 qs
         printxyz [x,y,z] = printf "%12.5f  %.5f  %.5f" x y z
-        qs        = mol ^. getCoord . to R.toList
+        rs        = mol ^. getCoord . to (R.computeUnboxedS . R.map (*a0) ) -- get the Cartesian coordinates and transform then to Amstrong
+        qs        = R.toList rs
         symbols   = mol ^. getAtoms
         between x = " Basis set\n" ++ x ++ " End of Basis\n"
         spaces    = (" "++)
@@ -409,20 +401,20 @@ takeInfo labels eitherInfo =
        Right xs -> return . naturalTransf $ parseDataGaussian xs labels
 
                                      
-updateMultiStates :: FilePath -> Molecule -> IO Molecule
-updateMultiStates file mol = do
-  r <- parseLogGaussian numat file
-  case r of
-       Left msg -> error . show $ msg
-       Right (GaussLog xs gs) -> return $ updateGrads gs . updateCASSCF xs $ mol
-       
+updateMultiStates :: FilePath -> FilePath -> Molecule -> IO Molecule
+updateMultiStates out fchk mol = do
+  let st          = mol ^. getElecSt        
+  (GaussLog xs g) <- parserLogFile numat out $ st
+  let casMol      = updateCASSCF xs $ mol
+  case st of
+       Left S0   -> getGradEnerFCHK fchk $ casMol 
+       otherwise -> return . updateGrads g $ casMol
+              
   where numat = mol ^. getAtoms . to length
         sh = mol ^. getForce . to extent
         negateRepa = computeUnboxedS . R.map (negate) 
-        updateGrads gs mol = let grads = fmap (negateRepa . fromListUnboxed sh) gs
-                                 st = calcElectSt mol
-                                 g = grads !! st
-                             in set getForce g mol    
+        updateGrads g mol = let grad = negateRepa . fromListUnboxed sh $ g
+                            in mol & getForce .~ grad    
                                                               
 updateCASSCF :: [EigenBLock] -> Molecule ->  Molecule
 updateCASSCF xs mol =
@@ -537,7 +529,7 @@ parseMol :: Molecule -> MyParser st (Label,[Double])  -> MyParser st Molecule
 parseMol mol parser = do
     numat <- intNumber 
     anyLine
-    es <- count 2 (spaces >> realNumber)
+    es <- many1 $ try (spaces >> realNumber)
     anyLine 
     geometry <- count numat parser
     let new = updatePosMom geometry mol 

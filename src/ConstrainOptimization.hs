@@ -37,7 +37,7 @@ driverConstrainedOptimizer job project mol (n,m) norm = do
 mainLoop :: Job -> String -> Molecule -> Hessian -> ExternalGrad -> Step -> IO Molecule
 mainLoop job project mol0 hess gext step = do
    let (mol1,dx)  = updateGeometry mol0 hess gext 
-   newmol <- interactWith job project mol1
+   newmol <- interactWith job project step mol1
    let [oldGrad,newGrad] = fmap  (^.getForce) [mol1,newmol]
        deltaGrad = NLA.fromList . R.toList . computeUnboxedS $ R.zipWith (-) newGrad oldGrad
        newHess = updateHess dx deltaGrad hess

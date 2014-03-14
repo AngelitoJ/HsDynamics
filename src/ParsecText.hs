@@ -32,3 +32,11 @@ blankLine = manyTill space newline     -- whatever spaces we find till we hit a 
 -- take While symbols are not found without consuming the symbols
 takeUntilSymbols :: [Char] -> MyParser st String
 takeUntilSymbols xs = many1 $ noneOf xs
+
+manyCharsTillNewLine :: [Char] -> MyParser st String
+manyCharsTillNewLine xs = manyTill (oneOf xs) newline
+
+comments, commentsLine :: MyParser st String 
+comments     = many1 $ oneOf [' ','*','-','#']
+commentsLine = manyTill (oneOf [' ','*','-','#']) newline  
+  

@@ -189,11 +189,18 @@ labelfield = do
 readEigenDataCASSCF :: FilePath -> IO (Either ParseError [EigenBLock])
 readEigenDataCASSCF = parseFromFile parseEigenData
 
-parseLogGaussian :: Int -> FilePath -> IO (Either ParseError GaussLog)
-parseLogGaussian k = parseFromFile combination
+parserLogFile ::  Int -> FilePath -> Either Singlet Triplet -> IO GaussLog
+parserLogFile numat file state = do 
+  r <- parseLogGaussian numat file state
+  case r of
+       Left msg -> error . show $ msg
+       Right gl -> return gl
+
+parseLogGaussian :: Int -> FilePath -> Either Singlet Triplet -> IO (Either ParseError GaussLog)
+parseLogGaussian k file state = parseFromFile combination file 
   where combination = do
         eg   <- parseEigenData
-        grad <- parseLogGrad k
+        grad <- parseLogGrad k state
         return $ GaussLog eg grad
 
 
@@ -236,16 +243,20 @@ parseConfigVal = do
   
 -- ======> Parse Gradients <=============
 
-parseLogGrad :: Int -> MyParser ()   [[Double]]
-parseLogGrad numat = do
-  let otherState = "Gradient of iOther State \n"
-      currentState = "Gradient of iVec State. \n"
-  manyTill anyChar (try $ string otherState) 
-  otherGrad <- concat `fmap` count numat parseLineNumber 
+parseLogGrad :: Int -> Either Singlet Triplet -> MyParser ()  [Double]
+parseLogGrad numat state = 
+  case state of
+       Left  S0  -> return []
+       otherwise -> parserExcitedGrad numat
+    
+  
+parserExcitedGrad :: Int -> MyParser ()   [Double]
+parserExcitedGrad numat = do
+  let currentState = "Gradient of iVec State. \n"
   manyTill anyChar (try $ string currentState) 
   iVecGrad  <- concat `fmap` count numat parseLineNumber 
-  return [otherGrad,iVecGrad]
-
+  return iVecGrad
+    
 parseLineNumber :: MyParser ()  [Double]  
 parseLineNumber = do
                  xs <- count 3 (spaces >> realNumber)

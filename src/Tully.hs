@@ -60,38 +60,42 @@ rlxRoot=2 :: Int-}
 -- ======> <===========
 tullyHS :: DT -> MatrixCmplx -> Int -> Molecule -> IO (Molecule, MatrixCmplx)
 tullyHS  dt aMatrix step mol = do
-    lo <- SR.randomIO
-    let eTot          = calcTotalEnergy mol
-        seed          = SR.mkStdGen lo
-        random        = take nSubStep $ filter (> 10**(-4)) $ aleGenRan seed        
-        energies      = mol ^. getEnergy
-        coeffs        = mol ^. getCoeffCI 
-        [p,pp,ppp]    = coeffs
-        [vp,vpp,vppp] = energies
-        states        = 2
-        nSubStep      = 200
-        deco          = 0.1
-        correctedp    = correctSignsByLuisma p pp vp rlxRoot
-        rlxRoot       = succ $ calcElectSt mol 
-        cb            = CB states dt nSubStep eTot deco vp vpp vppp correctedp pp ppp random
-        f1 = "Tully Haskell Routine for Dynamic step:" ++ (show $ succ step) ++ "\n"
-        f2 = "Substeps: " ++ (show nSubStep) ++ "\n"
-        f3 = "Decoherence Factor: " ++ (show deco) ++ "\n"
-        f4 = "Step delta: "  ++ (show dt) ++ "\n"
-    appendFile "TullyOutput" $ L.foldl1' (++) [f1,f2,f3,f4]
-    (newRelax,newAmatrix) <- driver aMatrix rlxRoot 1 cb mol
-    if newRelax == rlxRoot then return (mol,newAmatrix) 
-                           else  do
-                                 let intSt = pred newRelax
-                                     newSt    =  toEnum  $ intSt -- Tully Modules number S0 with 1 Dynamics with 0 
-                                     newCoeff = correctedp : (tail coeffs)
-                                     currentEnergy = let xs = mol^.getEnergy . to head   in xs !! intSt
-                                     newVel = scaleVelocity eTot currentEnergy mol
-                                     newMol = mol & getCoeffCI .~ newCoeff 
-                                                  & getElecSt  .~ (Left newSt) 
-                                                  & getVel     .~ newVel
-                                 appendFile "result.out" $ "Hop to Root: " ++ (show newSt) ++ "\n" 
-                                 return (newMol,newAmatrix)
+    let energies      = mol ^. getEnergy
+    if length energies <3 then return (mol,aMatrix)
+                          else tullyAction energies
+                          
+  where tullyAction energies = do                          
+           lo <- SR.randomIO
+           let eTot          = calcTotalEnergy mol
+               seed          = SR.mkStdGen lo
+               random        = take nSubStep $ filter (> 10**(-4)) $ aleGenRan seed                
+               coeffs        = mol ^. getCoeffCI 
+               [p,pp,ppp]    = coeffs
+               [vp,vpp,vppp] = energies
+               states        = 2
+               nSubStep      = 200
+               deco          = 0.1
+               correctedp    = correctSignsByLuisma p pp vp rlxRoot
+               rlxRoot       = succ $ calcElectSt mol 
+               cb            = CB states dt nSubStep eTot deco vp vpp vppp correctedp pp ppp random
+               f1 = "Tully Haskell Routine for Dynamic step:" ++ (show $ succ step) ++ "\n"
+               f2 = "Substeps: " ++ (show nSubStep) ++ "\n"
+               f3 = "Decoherence Factor: " ++ (show deco) ++ "\n"
+               f4 = "Step delta: "  ++ (show dt) ++ "\n"
+           appendFile "TullyOutput" $ L.foldl1' (++) [f1,f2,f3,f4]
+           (newRelax,newAmatrix) <- driver aMatrix rlxRoot 1 cb mol
+           if newRelax == rlxRoot then return (mol,newAmatrix) 
+                                  else  do
+                                        let intSt = pred newRelax
+                                            newSt    =  toEnum  $ intSt -- Tully Modules number S0 with 1 Dynamics with 0 
+                                            newCoeff = correctedp : (tail coeffs)
+                                            currentEnergy = let xs = mol^.getEnergy . to head   in xs !! intSt
+                                            newVel = scaleVelocity eTot currentEnergy mol
+                                            newMol = mol & getCoeffCI .~ newCoeff 
+                                                         & getElecSt  .~ (Left newSt) 
+                                                         & getVel     .~ newVel
+                                        appendFile "result.out" $ "Hop to Root: " ++ (show newSt) ++ "\n" 
+                                        return (newMol,newAmatrix)
                                      
 initialAMTX :: Molecule -> MatrixCmplx
 initialAMTX mol = [fun i j | i<- [0..st], j <- [0..st] ]
